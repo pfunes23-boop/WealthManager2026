@@ -29,6 +29,7 @@ import {
   ChevronRight,
   CheckCircle2,
   Circle,
+  BarChart3,
 } from "lucide-react";
 
 const firebaseConfig = {
@@ -48,11 +49,11 @@ const auth = getAuth(app);
 export default function WealthManager() {
   const [user, setUser] = useState(null);
   const [activeTab, setActiveTab] = useState("resumen");
-  const [currentDate, setCurrentDate] = useState(new Date(2026, 5));
+  const [currentDate, setCurrentDate] = useState(new Date(2026, 5)); // Junio 2026
   const [transactions, setTransactions] = useState([]);
   const [wishes, setWishes] = useState([]);
 
-  // NUEVOS ESTADOS FASE 1
+  // ESTADOS FORMULARIO
   const [isIncome, setIsIncome] = useState(false);
   const defaultCategories = [
     "🏠 Hogar",
@@ -113,6 +114,7 @@ export default function WealthManager() {
     e.preventDefault();
     if (!user) return;
 
+    // Si es compartido, calculamos la porción correspondiente
     const finalAmount =
       isShared && !isIncome
         ? parseFloat(amount) * (parseFloat(myPercentage) / 100)
@@ -130,10 +132,12 @@ export default function WealthManager() {
       description,
       amount: finalAmount,
       isIncome,
+      isShared: isIncome ? false : isShared,
+      myPercentage: isShared ? parseFloat(myPercentage) : 100,
       category: isIncome ? "💰 Ingreso" : selectedCategory,
       entity: isIncome ? "Billetera/Banco" : finalEntity,
       installments: finalInstallments,
-      isPaid: isIncome ? true : false, // Los ingresos entran como cobrados por defecto
+      isPaid: isIncome ? true : false,
       date: new Date().toISOString(),
       startMonth: currentDate.getMonth(),
       startYear: currentDate.getFullYear(),
@@ -147,6 +151,7 @@ export default function WealthManager() {
     setAmount("");
     setDescription("");
     setInstallments("1");
+    setIsShared(false);
   };
 
   const handleTogglePaid = async (id, currentStatus) => {
@@ -164,17 +169,74 @@ export default function WealthManager() {
     setTransactions(transactions.filter((t) => t.id !== id));
   };
 
-  // CÁLCULOS DE LA BILLETERA
-  const totalIngresos = transactions
+  // MOTOR FILTRADO POR MES SELECCIONADO (Soporta Cuotas y Recurrencia Básica)
+  const getTxForMonth = (month, year) => {
+    return transactions.filter((t) => {
+      if (t.isIncome) {
+        return t.startMonth === month && t.startYear === year;
+      } else {
+        const startTotalMonths = t.startYear * 12 + t.startMonth;
+        const targetTotalMonths = year * 12 + month;
+        const diffMonths = targetTotalMonths - startTotalMonths;
+        return diffMonths >= 0 && diffMonths < t.installments;
+      }
+    });
+  };
+
+  const currentTransactions = getTxForMonth(
+    currentDate.getMonth(),
+    currentDate.getFullYear()
+  );
+
+  // CÁLCULOS FINANCIEROS DEL MES SELECCIONADO
+  const totalIngresos = currentTransactions
     .filter((t) => t.isIncome)
     .reduce((acc, curr) => acc + curr.amount, 0);
-  const gastosPagados = transactions
+  const gastosPagados = currentTransactions
     .filter((t) => !t.isIncome && t.isPaid)
     .reduce((acc, curr) => acc + curr.amount / curr.installments, 0);
   const saldoActual = totalIngresos - gastosPagados;
-  const totalPendienteMes = transactions
+  const totalPendienteMes = currentTransactions
     .filter((t) => !t.isIncome && !t.isPaid)
     .reduce((acc, curr) => acc + curr.amount / curr.installments, 0);
+
+  // LOGICA ESTADISTICAS: Gastos por Categoría
+  const totalGastosMes = currentTransactions
+    .filter((t) => !t.isIncome)
+    .reduce((acc, curr) => acc + curr.amount / curr.installments, 0);
+
+  const categoryStats = defaultCategories
+    .map((cat) => {
+      const totalCat = currentTransactions
+        .filter((t) => t.category === cat)
+        .reduce((acc, curr) => acc + curr.amount / curr.installments, 0);
+      const porcentaje =
+        totalGastosMes > 0 ? (totalCat / totalGastosMes) * 100 : 0;
+      return { name: cat, amount: totalCat, percentage: porcentaje };
+    })
+    .filter((c) => c.amount > 0);
+
+  // LOGICA ESTADISTICAS: Proyección Próximos 4 Meses
+  const getProjectionData = () => {
+    const projection = [];
+    for (let i = 0; i < 4; i++) {
+      const d = new Date(currentDate.getFullYear(), currentDate.getMonth() + i);
+      const txs = getTxForMonth(d.getMonth(), d.getFullYear());
+      const total = txs
+        .filter((t) => !t.isIncome)
+        .reduce((acc, curr) => acc + curr.amount / curr.installments, 0);
+      projection.push({
+        label: d.toLocaleString("es-ES", { month: "short" }),
+        amount: total,
+      });
+    }
+    return projection;
+  };
+  const projectionData = getProjectionData();
+  const maxProjectionAmount = Math.max(
+    ...projectionData.map((p) => p.amount),
+    1
+  );
 
   if (!user) {
     return (
@@ -192,6 +254,7 @@ export default function WealthManager() {
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 font-sans pb-24">
+      {/* HEADER DE NAVEGACIÓN TEMPORAL */}
       <div className="bg-slate-900 p-4 sticky top-0 z-10 border-b border-slate-800 flex justify-between items-center">
         <button
           onClick={() =>
@@ -205,7 +268,7 @@ export default function WealthManager() {
         </button>
         <div className="text-center">
           <h2 className="text-sm text-slate-400 font-semibold uppercase tracking-widest">
-            Resumen
+            Panel Financiero
           </h2>
           <p className="text-lg font-bold text-lime-400">
             {currentDate.toLocaleString("es-ES", {
@@ -227,6 +290,7 @@ export default function WealthManager() {
       </div>
 
       <div className="p-4">
+        {/* TAB 1: RESUMEN Y BILLETERA */}
         {activeTab === "resumen" && (
           <div className="space-y-4">
             <div className="grid grid-cols-2 gap-4">
@@ -237,80 +301,184 @@ export default function WealthManager() {
                 <p className="text-2xl font-black text-emerald-400">
                   ${saldoActual.toLocaleString("es-AR")}
                 </p>
+                <span className="text-[10px] text-slate-500">
+                  Ingresos - Pagados
+                </span>
               </div>
               <div className="bg-slate-900 rounded-2xl p-4 border border-slate-800 shadow-xl">
                 <h3 className="text-slate-400 text-xs mb-1 uppercase tracking-wide">
-                  Pendiente de Pago
+                  Por Pagar
                 </h3>
                 <p className="text-2xl font-black text-rose-400">
                   ${totalPendienteMes.toLocaleString("es-AR")}
                 </p>
+                <span className="text-[10px] text-slate-500">
+                  Gastos pendientes
+                </span>
               </div>
             </div>
 
             <h3 className="text-lg font-bold mt-6 mb-3 text-lime-400">
               Movimientos del mes
             </h3>
-            {transactions.map((tx) => (
-              <div
-                key={tx.id}
-                className={`bg-slate-900 p-4 rounded-xl border ${
-                  tx.isPaid
-                    ? "border-emerald-900/50 opacity-70"
-                    : "border-slate-800"
-                } flex justify-between items-center transition-all`}
-              >
-                <div className="flex items-center gap-3">
-                  {!tx.isIncome && (
-                    <button
-                      onClick={() => handleTogglePaid(tx.id, tx.isPaid)}
-                      className="text-slate-400 hover:text-lime-400 transition-colors"
-                    >
-                      {tx.isPaid ? (
-                        <CheckCircle2 className="text-emerald-500" size={24} />
-                      ) : (
-                        <Circle size={24} />
+            {currentTransactions.length === 0 ? (
+              <p className="text-slate-500 text-sm text-center py-6">
+                No hay registros cargados para este mes.
+              </p>
+            ) : (
+              currentTransactions.map((tx) => {
+                const currentInstallmentNumber =
+                  currentDate.getFullYear() * 12 +
+                  currentDate.getMonth() -
+                  (tx.startYear * 12 + tx.startMonth) +
+                  1;
+                return (
+                  <div
+                    key={tx.id}
+                    className={`bg-slate-900 p-4 rounded-xl border ${
+                      tx.isPaid
+                        ? "border-emerald-950 opacity-60"
+                        : "border-slate-800"
+                    } flex justify-between items-center transition-all`}
+                  >
+                    <div className="flex items-center gap-3">
+                      {!tx.isIncome && (
+                        <button
+                          onClick={() => handleTogglePaid(tx.id, tx.isPaid)}
+                          className="text-slate-400 hover:text-lime-400 transition-colors"
+                        >
+                          {tx.isPaid ? (
+                            <CheckCircle2
+                              className="text-emerald-500"
+                              size={24}
+                            />
+                          ) : (
+                            <Circle size={24} />
+                          )}
+                        </button>
                       )}
-                    </button>
-                  )}
-                  <div>
-                    <p
-                      className={`font-bold ${
-                        tx.isPaid && !tx.isIncome
-                          ? "line-through text-slate-500"
-                          : "text-slate-100"
-                      }`}
-                    >
-                      {tx.description}
-                    </p>
-                    <p className="text-xs text-slate-400">
-                      <span className="mr-2">{tx.category}</span>
-                      {tx.entity}{" "}
-                      {tx.installments > 1 && `• Cuota de ${tx.installments}`}
-                    </p>
+                      <div>
+                        <p
+                          className={`font-bold ${
+                            tx.isPaid && !tx.isIncome
+                              ? "line-through text-slate-500"
+                              : "text-slate-100"
+                          }`}
+                        >
+                          {tx.description}
+                        </p>
+                        <p className="text-xs text-slate-400 flex flex-wrap gap-1 items-center">
+                          <span className="bg-slate-800 px-1.5 py-0.5 rounded text-[10px]">
+                            {tx.category}
+                          </span>
+                          <span>• {tx.entity}</span>
+                          {tx.installments > 1 && (
+                            <span className="text-lime-400 font-medium">
+                              ({currentInstallmentNumber}/{tx.installments}{" "}
+                              cuotas)
+                            </span>
+                          )}
+                          {tx.isShared && (
+                            <span className="bg-amber-500/20 text-amber-400 border border-amber-500/30 px-1 rounded text-[9px]">
+                              Compartido
+                            </span>
+                          )}
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-4">
+                      <p
+                        className={`font-bold ${
+                          tx.isIncome ? "text-emerald-400" : "text-rose-400"
+                        }`}
+                      >
+                        {tx.isIncome ? "+" : "-"}$
+                        {(tx.amount / tx.installments).toLocaleString("es-AR")}
+                      </p>
+                      <button
+                        onClick={() => handleDeleteTx(tx.id)}
+                        className="text-slate-600 hover:text-red-500"
+                      >
+                        <Trash2 size={18} />
+                      </button>
+                    </div>
                   </div>
-                </div>
-                <div className="flex items-center gap-4">
-                  <p
-                    className={`font-bold ${
-                      tx.isIncome ? "text-emerald-400" : "text-rose-400"
-                    }`}
-                  >
-                    {tx.isIncome ? "+" : "-"}$
-                    {(tx.amount / tx.installments).toLocaleString("es-AR")}
-                  </p>
-                  <button
-                    onClick={() => handleDeleteTx(tx.id)}
-                    className="text-slate-600 hover:text-red-500"
-                  >
-                    <Trash2 size={18} />
-                  </button>
-                </div>
-              </div>
-            ))}
+                );
+              })
+            )}
           </div>
         )}
 
+        {/* TAB 2: ESTADÍSTICAS Y GRÁFICOS (NUEVO) */}
+        {activeTab === "estadisticas" && (
+          <div className="space-y-6">
+            {/* GRÁFICO DE BARRAS VERTICALES: PROYECCIÓN FUTURA */}
+            <div className="bg-slate-900 p-5 rounded-2xl border border-slate-800">
+              <h3 className="text-sm font-bold text-slate-400 uppercase tracking-wider mb-4">
+                Proyección de Gastos Próximos Meses
+              </h3>
+              <div className="flex justify-around items-end h-36 pt-4 border-b border-slate-800">
+                {projectionData.map((p, idx) => {
+                  const barHeight = (p.amount / maxProjectionAmount) * 100;
+                  return (
+                    <div
+                      key={idx}
+                      className="flex flex-col items-center flex-1 group"
+                    >
+                      <span className="text-[10px] text-slate-400 mb-1 opacity-0 group-hover:opacity-100 transition-opacity font-mono">
+                        ${Math.round(p.amount).toLocaleString("es-AR")}
+                      </span>
+                      <div
+                        style={{ height: `${Math.max(barHeight, 6)}%` }}
+                        className={`w-8 rounded-t-lg transition-all duration-500 ${
+                          idx === 0
+                            ? "bg-lime-500 shadow-[0_0_15px_rgba(132,204,22,0.2)]"
+                            : "bg-slate-700 hover:bg-slate-600"
+                        }`}
+                      />
+                      <span className="text-xs font-bold mt-2 uppercase text-slate-400">
+                        {p.label}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* GRÁFICO DE BARRAS HORIZONTALES: DISTRIBUCIÓN POR CATEGORÍA */}
+            <div className="bg-slate-900 p-5 rounded-2xl border border-slate-800 space-y-4">
+              <h3 className="text-sm font-bold text-slate-400 uppercase tracking-wider">
+                Distribución por Categorías (
+                {currentDate.toLocaleString("es-ES", { month: "short" })})
+              </h3>
+              {categoryStats.length === 0 ? (
+                <p className="text-slate-500 text-sm text-center py-4">
+                  No hay gastos este mes para categorizar.
+                </p>
+              ) : (
+                categoryStats.map((c, idx) => (
+                  <div key={idx} className="space-y-1">
+                    <div className="flex justify-between text-xs font-semibold">
+                      <span className="text-slate-200">{c.name}</span>
+                      <span className="text-slate-400 font-mono">
+                        ${c.amount.toLocaleString("es-AR")} (
+                        {Math.round(c.percentage)}%)
+                      </span>
+                    </div>
+                    <div className="w-full bg-slate-800 h-2.5 rounded-full overflow-hidden">
+                      <div
+                        style={{ width: `${c.percentage}%` }}
+                        className="bg-gradient-to-r from-lime-500 to-emerald-500 h-full rounded-full"
+                      />
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* TAB 3: FORMULARIO AGREGAR (CORREGIDO COMPARTIDO) */}
         {activeTab === "agregar" && (
           <form
             onSubmit={handleAddTransaction}
@@ -343,7 +511,7 @@ export default function WealthManager() {
 
             <div>
               <label className="text-xs text-slate-400 uppercase">
-                Concepto
+                Concepto / Descripción
               </label>
               <input
                 type="text"
@@ -367,10 +535,50 @@ export default function WealthManager() {
                   className="w-full bg-slate-800 border-none rounded-lg p-3 text-white mt-1"
                 />
               </div>
+
+              {/* SELECTOR DE CORTE COMPARTIDO (REINSTALADO) */}
+              {!isIncome && isShared && (
+                <div className="w-1/3">
+                  <label className="text-xs text-slate-400 uppercase">
+                    Tu %
+                  </label>
+                  <input
+                    type="number"
+                    min="1"
+                    max="100"
+                    value={myPercentage}
+                    onChange={(e) => setMyPercentage(e.target.value)}
+                    className="w-full bg-slate-800 border-none rounded-lg p-3 text-white mt-1"
+                  />
+                </div>
+              )}
             </div>
 
             {!isIncome && (
               <>
+                <div className="flex bg-slate-950 rounded-lg p-1 border border-slate-800">
+                  <button
+                    type="button"
+                    onClick={() => setIsShared(false)}
+                    className={`flex-1 py-1.5 rounded-md text-xs font-bold transition-all ${
+                      !isShared ? "bg-slate-800 text-white" : "text-slate-500"
+                    }`}
+                  >
+                    Gasto Personal
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setIsShared(true)}
+                    className={`flex-1 py-1.5 rounded-md text-xs font-bold transition-all ${
+                      isShared
+                        ? "bg-amber-500/20 text-amber-400"
+                        : "text-slate-500"
+                    }`}
+                  >
+                    Gasto Compartido
+                  </button>
+                </div>
+
                 <div>
                   <label className="text-xs text-slate-400 uppercase">
                     Categoría
@@ -444,43 +652,56 @@ export default function WealthManager() {
           </form>
         )}
 
-        {/* Mantenemos las pestañas de Deseos y Perfil iguales a tu versión anterior */}
         {activeTab === "deseos" && (
-          <div className="p-4 text-center text-slate-400">
-            Sección Deseos (Sin cambios)
+          <div className="p-4 text-center text-slate-500 text-sm py-12">
+            Lista de Deseos (Sin cambios, lista para usar)
           </div>
         )}
         {activeTab === "perfil" && (
-          <div className="p-4 text-center text-slate-400">
-            Sección Perfil (Sin cambios)
+          <div className="p-4 text-center text-slate-500 text-sm py-12">
+            Configuración de Perfil (Sin cambios)
           </div>
         )}
       </div>
 
-      <div className="fixed bottom-0 left-0 right-0 bg-slate-900 border-t border-slate-800 flex justify-around p-3 pb-safe z-50">
+      {/* MENÚ DE NAVEGACIÓN INFERIOR (5 BOTONES INTEGRADOS) */}
+      <div className="fixed bottom-0 left-0 right-0 bg-slate-900 border-t border-slate-800 flex justify-around p-2 pb-safe z-50">
         <button
           onClick={() => setActiveTab("resumen")}
           className={`flex flex-col items-center p-2 ${
             activeTab === "resumen" ? "text-lime-400" : "text-slate-500"
           }`}
         >
-          <Wallet size={24} />
-          <span className="text-[10px] mt-1 font-bold">RESUMEN</span>
+          <Wallet size={22} />
+          <span className="text-[9px] mt-1 font-bold uppercase">Billetera</span>
         </button>
         <button
-          onClick={() => setActiveTab("agregar")}
-          className="flex flex-col items-center justify-center bg-lime-500 text-slate-950 rounded-full w-14 h-14 -mt-6 shadow-[0_0_15px_rgba(132,204,22,0.3)] border-4 border-slate-950"
+          onClick={() => setActiveTab("estadisticas")}
+          className={`flex flex-col items-center p-2 ${
+            activeTab === "estadisticas" ? "text-lime-400" : "text-slate-500"
+          }`}
         >
-          <PlusCircle size={28} />
+          <BarChart3 size={22} />
+          <span className="text-[9px] mt-1 font-bold uppercase">
+            Estadísticas
+          </span>
         </button>
+
+        <button
+          onClick={() => setActiveTab("agregar")}
+          className="flex flex-col items-center justify-center bg-lime-500 text-slate-950 rounded-full w-12 h-12 -mt-4 shadow-[0_0_15px_rgba(132,204,22,0.3)] border-4 border-slate-950"
+        >
+          <PlusCircle size={24} />
+        </button>
+
         <button
           onClick={() => setActiveTab("deseos")}
           className={`flex flex-col items-center p-2 ${
             activeTab === "deseos" ? "text-lime-400" : "text-slate-500"
           }`}
         >
-          <ListTodo size={24} />
-          <span className="text-[10px] mt-1 font-bold">DESEOS</span>
+          <ListTodo size={22} />
+          <span className="text-[9px] mt-1 font-bold uppercase">Deseos</span>
         </button>
         <button
           onClick={() => setActiveTab("perfil")}
@@ -488,8 +709,8 @@ export default function WealthManager() {
             activeTab === "perfil" ? "text-lime-400" : "text-slate-500"
           }`}
         >
-          <Settings size={24} />
-          <span className="text-[10px] mt-1 font-bold">PERFIL</span>
+          <Settings size={22} />
+          <span className="text-[9px] mt-1 font-bold uppercase">Perfil</span>
         </button>
       </div>
     </div>
