@@ -16,20 +16,20 @@ import {
   GoogleAuthProvider,
   signInWithPopup,
   onAuthStateChanged,
-  signOut,
 } from "firebase/auth";
 import {
-  Trash2,
   PlusCircle,
   Wallet,
-  Users,
   Settings,
   ListTodo,
-  ChevronLeft,
-  ChevronRight,
-  CheckCircle2,
-  Circle,
   BarChart3,
+  Users,
+  Building,
+  Car,
+  Coffee,
+  Plane,
+  Home,
+  CreditCard,
 } from "lucide-react";
 
 const firebaseConfig = {
@@ -48,41 +48,31 @@ const auth = getAuth(app);
 
 export default function WealthManager() {
   const [user, setUser] = useState(null);
-  const [activeTab, setActiveTab] = useState("resumen");
-  const [currentDate, setCurrentDate] = useState(new Date(2026, 5)); // Junio 2026
-  const [transactions, setTransactions] = useState([]);
-  const [wishes, setWishes] = useState([]);
+  const [activeTab, setActiveTab] = useState("agregar"); // Empezamos en agregar para probar el form
+  const [debts, setDebts] = useState([]);
 
-  // ESTADOS FORMULARIO
-  const [isIncome, setIsIncome] = useState(false);
-  const defaultCategories = [
-    "🏠 Hogar",
-    "🍻 Diversión",
-    "🍔 Comida",
-    "🏋️ Ejercicio",
-    "💼 Trabajo",
-    "✈️ Viajes",
-    "🛒 Supermercado",
-    "🚗 Transporte",
+  // ESTADOS DEL NUEVO FORMULARIO ESTILO TINYDEBT
+  const [debtName, setDebtName] = useState("");
+  const categories = [
+    "Tarjeta de Crédito",
+    "Préstamo Personal",
+    "Hogar",
+    "Vehículo",
+    "Viajes",
+    "Diversión",
+    "Otro",
   ];
-  const [selectedCategory, setSelectedCategory] = useState(
-    defaultCategories[0]
-  );
+  const [selectedCategory, setSelectedCategory] = useState(categories[0]);
 
-  const [entities, setEntities] = useState([
-    "Efectivo",
-    "Naranja Tarjeta",
-    "Bancor Tarjeta",
-    "Banco Ciudad",
-    "MercadoPago",
-    "Go Cuotas",
-    "Ualá",
-  ]);
-  const [newEntity, setNewEntity] = useState("");
-  const [amount, setAmount] = useState("");
-  const [description, setDescription] = useState("");
-  const [selectedEntity, setSelectedEntity] = useState(entities[0]);
-  const [installments, setInstallments] = useState("1");
+  const [originalAmount, setOriginalAmount] = useState("");
+  const [currentBalance, setCurrentBalance] = useState("");
+  const [currency, setCurrency] = useState("ARS - Peso Argentino");
+  const [apr, setApr] = useState("0.00");
+  const [minPayment, setMinPayment] = useState("");
+  const [durationMonths, setDurationMonths] = useState("1");
+  const [dueDay, setDueDay] = useState("10");
+
+  // ESTADOS DEL FRASCO COMPARTIDO
   const [isShared, setIsShared] = useState(false);
   const [myPercentage, setMyPercentage] = useState("50");
 
@@ -101,150 +91,65 @@ export default function WealthManager() {
 
   const loadData = async (uid) => {
     const qTx = query(
-      collection(db, `users/${uid}/expenses`),
-      orderBy("date", "desc")
+      collection(db, `users/${uid}/debts`),
+      orderBy("createdAt", "desc")
     );
     const snapshotTx = await getDocs(qTx);
-    setTransactions(
-      snapshotTx.docs.map((doc) => ({ id: doc.id, ...doc.data() }))
-    );
+    setDebts(snapshotTx.docs.map((doc) => ({ id: doc.id, ...doc.data() })));
   };
 
-  const handleAddTransaction = async (e) => {
+  const handleAddDebt = async (e) => {
     e.preventDefault();
     if (!user) return;
 
-    // Si es compartido, calculamos la porción correspondiente
-    const finalAmount =
-      isShared && !isIncome
-        ? parseFloat(amount) * (parseFloat(myPercentage) / 100)
-        : parseFloat(amount);
-    const finalInstallments =
-      isIncome || selectedEntity === "Efectivo" ? 1 : parseInt(installments);
+    // Cálculo interno para el Frasco Compartido
+    const myResponsibilityRatio = isShared ? parseFloat(myPercentage) / 100 : 1;
+    const finalOriginalAmount =
+      parseFloat(originalAmount) * myResponsibilityRatio;
+    const finalCurrentBalance = currentBalance
+      ? parseFloat(currentBalance) * myResponsibilityRatio
+      : finalOriginalAmount;
+    const finalMinPayment = parseFloat(minPayment) * myResponsibilityRatio;
 
-    let finalEntity = selectedEntity;
-    if (selectedEntity === "nueva" && newEntity.trim() !== "") {
-      finalEntity = newEntity;
-      setEntities([...entities, newEntity]);
-    }
-
-    const newTx = {
-      description,
-      amount: finalAmount,
-      isIncome,
-      isShared: isIncome ? false : isShared,
+    const newDebt = {
+      name: debtName,
+      category: selectedCategory,
+      originalAmount: parseFloat(originalAmount), // Guardamos el total real del frasco
+      currentBalance: parseFloat(currentBalance || originalAmount),
+      myResponsibilityAmount: finalCurrentBalance, // Lo que me toca pagar a mi
+      currency: currency,
+      apr: parseFloat(apr),
+      minPayment: finalMinPayment,
+      durationMonths: parseInt(durationMonths),
+      dueDay: parseInt(dueDay),
+      isShared: isShared,
       myPercentage: isShared ? parseFloat(myPercentage) : 100,
-      category: isIncome ? "💰 Ingreso" : selectedCategory,
-      entity: isIncome ? "Billetera/Banco" : finalEntity,
-      installments: finalInstallments,
-      isPaid: isIncome ? true : false,
-      date: new Date().toISOString(),
-      startMonth: currentDate.getMonth(),
-      startYear: currentDate.getFullYear(),
+      createdAt: new Date().toISOString(),
+      status: "active",
     };
 
     const docRef = await addDoc(
-      collection(db, `users/${user.uid}/expenses`),
-      newTx
+      collection(db, `users/${user.uid}/debts`),
+      newDebt
     );
-    setTransactions([{ id: docRef.id, ...newTx }, ...transactions]);
-    setAmount("");
-    setDescription("");
-    setInstallments("1");
-    setIsShared(false);
+    setDebts([{ id: docRef.id, ...newDebt }, ...debts]);
+
+    // Limpiar formulario
+    setDebtName("");
+    setOriginalAmount("");
+    setCurrentBalance("");
+    setMinPayment("");
+    alert("¡Deuda registrada con éxito en tu base de datos!");
+    setActiveTab("resumen");
   };
-
-  const handleTogglePaid = async (id, currentStatus) => {
-    const docRef = doc(db, `users/${user.uid}/expenses`, id);
-    await updateDoc(docRef, { isPaid: !currentStatus });
-    setTransactions(
-      transactions.map((t) =>
-        t.id === id ? { ...t, isPaid: !currentStatus } : t
-      )
-    );
-  };
-
-  const handleDeleteTx = async (id) => {
-    await deleteDoc(doc(db, `users/${user.uid}/expenses`, id));
-    setTransactions(transactions.filter((t) => t.id !== id));
-  };
-
-  // MOTOR FILTRADO POR MES SELECCIONADO (Soporta Cuotas y Recurrencia Básica)
-  const getTxForMonth = (month, year) => {
-    return transactions.filter((t) => {
-      if (t.isIncome) {
-        return t.startMonth === month && t.startYear === year;
-      } else {
-        const startTotalMonths = t.startYear * 12 + t.startMonth;
-        const targetTotalMonths = year * 12 + month;
-        const diffMonths = targetTotalMonths - startTotalMonths;
-        return diffMonths >= 0 && diffMonths < t.installments;
-      }
-    });
-  };
-
-  const currentTransactions = getTxForMonth(
-    currentDate.getMonth(),
-    currentDate.getFullYear()
-  );
-
-  // CÁLCULOS FINANCIEROS DEL MES SELECCIONADO
-  const totalIngresos = currentTransactions
-    .filter((t) => t.isIncome)
-    .reduce((acc, curr) => acc + curr.amount, 0);
-  const gastosPagados = currentTransactions
-    .filter((t) => !t.isIncome && t.isPaid)
-    .reduce((acc, curr) => acc + curr.amount / curr.installments, 0);
-  const saldoActual = totalIngresos - gastosPagados;
-  const totalPendienteMes = currentTransactions
-    .filter((t) => !t.isIncome && !t.isPaid)
-    .reduce((acc, curr) => acc + curr.amount / curr.installments, 0);
-
-  // LOGICA ESTADISTICAS: Gastos por Categoría
-  const totalGastosMes = currentTransactions
-    .filter((t) => !t.isIncome)
-    .reduce((acc, curr) => acc + curr.amount / curr.installments, 0);
-
-  const categoryStats = defaultCategories
-    .map((cat) => {
-      const totalCat = currentTransactions
-        .filter((t) => t.category === cat)
-        .reduce((acc, curr) => acc + curr.amount / curr.installments, 0);
-      const porcentaje =
-        totalGastosMes > 0 ? (totalCat / totalGastosMes) * 100 : 0;
-      return { name: cat, amount: totalCat, percentage: porcentaje };
-    })
-    .filter((c) => c.amount > 0);
-
-  // LOGICA ESTADISTICAS: Proyección Próximos 4 Meses
-  const getProjectionData = () => {
-    const projection = [];
-    for (let i = 0; i < 4; i++) {
-      const d = new Date(currentDate.getFullYear(), currentDate.getMonth() + i);
-      const txs = getTxForMonth(d.getMonth(), d.getFullYear());
-      const total = txs
-        .filter((t) => !t.isIncome)
-        .reduce((acc, curr) => acc + curr.amount / curr.installments, 0);
-      projection.push({
-        label: d.toLocaleString("es-ES", { month: "short" }),
-        amount: total,
-      });
-    }
-    return projection;
-  };
-  const projectionData = getProjectionData();
-  const maxProjectionAmount = Math.max(
-    ...projectionData.map((p) => p.amount),
-    1
-  );
 
   if (!user) {
     return (
-      <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center p-6 font-sans">
+      <div className="min-h-screen bg-[#0F172A] flex flex-col items-center justify-center p-6 font-sans">
         <h1 className="text-3xl font-black text-white mb-8">Wealth Manager</h1>
         <button
           onClick={loginWithGoogle}
-          className="w-full bg-white text-slate-900 font-bold py-4 rounded-xl flex items-center justify-center gap-3"
+          className="w-full bg-white text-[#0F172A] font-bold py-4 rounded-xl flex items-center justify-center gap-3"
         >
           Continuar con Google
         </button>
@@ -253,464 +158,323 @@ export default function WealthManager() {
   }
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 font-sans pb-24">
-      {/* HEADER DE NAVEGACIÓN TEMPORAL */}
-      <div className="bg-slate-900 p-4 sticky top-0 z-10 border-b border-slate-800 flex justify-between items-center">
-        <button
-          onClick={() =>
-            setCurrentDate(
-              new Date(currentDate.getFullYear(), currentDate.getMonth() - 1)
-            )
-          }
-          className="p-2 bg-slate-800 rounded-full text-slate-300"
-        >
-          <ChevronLeft size={20} />
-        </button>
-        <div className="text-center">
-          <h2 className="text-sm text-slate-400 font-semibold uppercase tracking-widest">
-            Panel Financiero
+    <div className="min-h-screen bg-[#111827] text-slate-100 font-sans pb-24">
+      {/* HEADER TIPO TINYDEBT */}
+      <div className="bg-[#1F2937] p-4 sticky top-0 z-10 border-b border-gray-800 flex justify-between items-center shadow-md">
+        <div>
+          <h2 className="text-2xl font-bold text-white tracking-tight">
+            {activeTab === "agregar"
+              ? "Añadir Deuda"
+              : activeTab === "resumen"
+              ? "¡Hola!"
+              : activeTab.toUpperCase()}
           </h2>
-          <p className="text-lg font-bold text-lime-400">
-            {currentDate.toLocaleString("es-ES", {
-              month: "long",
-              year: "numeric",
-            })}
-          </p>
+          {activeTab === "resumen" && (
+            <p className="text-xs text-gray-400">Su resumen de finanzas</p>
+          )}
         </div>
-        <button
-          onClick={() =>
-            setCurrentDate(
-              new Date(currentDate.getFullYear(), currentDate.getMonth() + 1)
-            )
-          }
-          className="p-2 bg-slate-800 rounded-full text-slate-300"
-        >
-          <ChevronRight size={20} />
-        </button>
+        <div className="w-10 h-10 bg-cyan-900 rounded-full flex items-center justify-center text-cyan-400 font-bold border border-cyan-700">
+          {user.displayName ? user.displayName.charAt(0).toUpperCase() : "U"}
+        </div>
       </div>
 
       <div className="p-4">
-        {/* TAB 1: RESUMEN Y BILLETERA */}
-        {activeTab === "resumen" && (
-          <div className="space-y-4">
-            <div className="grid grid-cols-2 gap-4">
-              <div className="bg-slate-900 rounded-2xl p-4 border border-slate-800 shadow-xl">
-                <h3 className="text-slate-400 text-xs mb-1 uppercase tracking-wide">
-                  Saldo Disponible
-                </h3>
-                <p className="text-2xl font-black text-emerald-400">
-                  ${saldoActual.toLocaleString("es-AR")}
-                </p>
-                <span className="text-[10px] text-slate-500">
-                  Ingresos - Pagados
-                </span>
-              </div>
-              <div className="bg-slate-900 rounded-2xl p-4 border border-slate-800 shadow-xl">
-                <h3 className="text-slate-400 text-xs mb-1 uppercase tracking-wide">
-                  Por Pagar
-                </h3>
-                <p className="text-2xl font-black text-rose-400">
-                  ${totalPendienteMes.toLocaleString("es-AR")}
-                </p>
-                <span className="text-[10px] text-slate-500">
-                  Gastos pendientes
-                </span>
-              </div>
-            </div>
-
-            <h3 className="text-lg font-bold mt-6 mb-3 text-lime-400">
-              Movimientos del mes
-            </h3>
-            {currentTransactions.length === 0 ? (
-              <p className="text-slate-500 text-sm text-center py-6">
-                No hay registros cargados para este mes.
-              </p>
-            ) : (
-              currentTransactions.map((tx) => {
-                const currentInstallmentNumber =
-                  currentDate.getFullYear() * 12 +
-                  currentDate.getMonth() -
-                  (tx.startYear * 12 + tx.startMonth) +
-                  1;
-                return (
-                  <div
-                    key={tx.id}
-                    className={`bg-slate-900 p-4 rounded-xl border ${
-                      tx.isPaid
-                        ? "border-emerald-950 opacity-60"
-                        : "border-slate-800"
-                    } flex justify-between items-center transition-all`}
-                  >
-                    <div className="flex items-center gap-3">
-                      {!tx.isIncome && (
-                        <button
-                          onClick={() => handleTogglePaid(tx.id, tx.isPaid)}
-                          className="text-slate-400 hover:text-lime-400 transition-colors"
-                        >
-                          {tx.isPaid ? (
-                            <CheckCircle2
-                              className="text-emerald-500"
-                              size={24}
-                            />
-                          ) : (
-                            <Circle size={24} />
-                          )}
-                        </button>
-                      )}
-                      <div>
-                        <p
-                          className={`font-bold ${
-                            tx.isPaid && !tx.isIncome
-                              ? "line-through text-slate-500"
-                              : "text-slate-100"
-                          }`}
-                        >
-                          {tx.description}
-                        </p>
-                        <p className="text-xs text-slate-400 flex flex-wrap gap-1 items-center">
-                          <span className="bg-slate-800 px-1.5 py-0.5 rounded text-[10px]">
-                            {tx.category}
-                          </span>
-                          <span>• {tx.entity}</span>
-                          {tx.installments > 1 && (
-                            <span className="text-lime-400 font-medium">
-                              ({currentInstallmentNumber}/{tx.installments}{" "}
-                              cuotas)
-                            </span>
-                          )}
-                          {tx.isShared && (
-                            <span className="bg-amber-500/20 text-amber-400 border border-amber-500/30 px-1 rounded text-[9px]">
-                              Compartido
-                            </span>
-                          )}
-                        </p>
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-4">
-                      <p
-                        className={`font-bold ${
-                          tx.isIncome ? "text-emerald-400" : "text-rose-400"
-                        }`}
-                      >
-                        {tx.isIncome ? "+" : "-"}$
-                        {(tx.amount / tx.installments).toLocaleString("es-AR")}
-                      </p>
-                      <button
-                        onClick={() => handleDeleteTx(tx.id)}
-                        className="text-slate-600 hover:text-red-500"
-                      >
-                        <Trash2 size={18} />
-                      </button>
-                    </div>
-                  </div>
-                );
-              })
-            )}
-          </div>
-        )}
-
-        {/* TAB 2: ESTADÍSTICAS Y GRÁFICOS (NUEVO) */}
-        {activeTab === "estadisticas" && (
-          <div className="space-y-6">
-            {/* GRÁFICO DE BARRAS VERTICALES: PROYECCIÓN FUTURA */}
-            <div className="bg-slate-900 p-5 rounded-2xl border border-slate-800">
-              <h3 className="text-sm font-bold text-slate-400 uppercase tracking-wider mb-4">
-                Proyección de Gastos Próximos Meses
-              </h3>
-              <div className="flex justify-around items-end h-36 pt-4 border-b border-slate-800">
-                {projectionData.map((p, idx) => {
-                  const barHeight = (p.amount / maxProjectionAmount) * 100;
-                  return (
-                    <div
-                      key={idx}
-                      className="flex flex-col items-center flex-1 group"
-                    >
-                      <span className="text-[10px] text-slate-400 mb-1 opacity-0 group-hover:opacity-100 transition-opacity font-mono">
-                        ${Math.round(p.amount).toLocaleString("es-AR")}
-                      </span>
-                      <div
-                        style={{ height: `${Math.max(barHeight, 6)}%` }}
-                        className={`w-8 rounded-t-lg transition-all duration-500 ${
-                          idx === 0
-                            ? "bg-lime-500 shadow-[0_0_15px_rgba(132,204,22,0.2)]"
-                            : "bg-slate-700 hover:bg-slate-600"
-                        }`}
-                      />
-                      <span className="text-xs font-bold mt-2 uppercase text-slate-400">
-                        {p.label}
-                      </span>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-
-            {/* GRÁFICO DE BARRAS HORIZONTALES: DISTRIBUCIÓN POR CATEGORÍA */}
-            <div className="bg-slate-900 p-5 rounded-2xl border border-slate-800 space-y-4">
-              <h3 className="text-sm font-bold text-slate-400 uppercase tracking-wider">
-                Distribución por Categorías (
-                {currentDate.toLocaleString("es-ES", { month: "short" })})
-              </h3>
-              {categoryStats.length === 0 ? (
-                <p className="text-slate-500 text-sm text-center py-4">
-                  No hay gastos este mes para categorizar.
-                </p>
-              ) : (
-                categoryStats.map((c, idx) => (
-                  <div key={idx} className="space-y-1">
-                    <div className="flex justify-between text-xs font-semibold">
-                      <span className="text-slate-200">{c.name}</span>
-                      <span className="text-slate-400 font-mono">
-                        ${c.amount.toLocaleString("es-AR")} (
-                        {Math.round(c.percentage)}%)
-                      </span>
-                    </div>
-                    <div className="w-full bg-slate-800 h-2.5 rounded-full overflow-hidden">
-                      <div
-                        style={{ width: `${c.percentage}%` }}
-                        className="bg-gradient-to-r from-lime-500 to-emerald-500 h-full rounded-full"
-                      />
-                    </div>
-                  </div>
-                ))
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* TAB 3: FORMULARIO AGREGAR (CORREGIDO COMPARTIDO) */}
+        {/* PESTAÑA AGREGAR - CLON UI TINYDEBT */}
         {activeTab === "agregar" && (
-          <form
-            onSubmit={handleAddTransaction}
-            className="bg-slate-900 p-6 rounded-2xl border border-slate-800 space-y-4"
-          >
-            <h3 className="text-xl font-bold text-lime-400 mb-4">
-              Nuevo Registro
-            </h3>
-
-            <div className="flex bg-slate-800 rounded-lg p-1 mb-4">
-              <button
-                type="button"
-                onClick={() => setIsIncome(false)}
-                className={`flex-1 py-2 rounded-md text-sm font-bold ${
-                  !isIncome ? "bg-rose-500 text-white" : "text-slate-400"
-                }`}
-              >
-                Gasto
-              </button>
-              <button
-                type="button"
-                onClick={() => setIsIncome(true)}
-                className={`flex-1 py-2 rounded-md text-sm font-bold ${
-                  isIncome ? "bg-emerald-500 text-white" : "text-slate-400"
-                }`}
-              >
-                Ingreso
-              </button>
-            </div>
-
-            <div>
-              <label className="text-xs text-slate-400 uppercase">
-                Concepto / Descripción
-              </label>
-              <input
-                type="text"
-                required
-                value={description}
-                onChange={(e) => setDescription(e.target.value)}
-                className="w-full bg-slate-800 border-none rounded-lg p-3 text-white mt-1"
-              />
-            </div>
-
-            <div className="flex gap-4">
-              <div className="flex-1">
-                <label className="text-xs text-slate-400 uppercase">
-                  Monto ($)
+          <form onSubmit={handleAddDebt} className="space-y-5 animate-fade-in">
+            {/* SECCIÓN 1: DATOS BÁSICOS */}
+            <div className="bg-[#1F2937] p-5 rounded-2xl border border-gray-800 shadow-lg space-y-4">
+              <div>
+                <label className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-1 block">
+                  Nombre de la Deuda *
                 </label>
                 <input
-                  type="number"
+                  type="text"
                   required
-                  value={amount}
-                  onChange={(e) => setAmount(e.target.value)}
-                  className="w-full bg-slate-800 border-none rounded-lg p-3 text-white mt-1"
+                  placeholder="ej. Tarjeta Naranja, Alquiler..."
+                  value={debtName}
+                  onChange={(e) => setDebtName(e.target.value)}
+                  className="w-full bg-[#374151] border border-gray-600 rounded-xl p-3.5 text-white focus:ring-2 focus:ring-cyan-500 outline-none transition-all"
                 />
               </div>
 
-              {/* SELECTOR DE CORTE COMPARTIDO (REINSTALADO) */}
-              {!isIncome && isShared && (
-                <div className="w-1/3">
-                  <label className="text-xs text-slate-400 uppercase">
-                    Tu %
+              <div>
+                <label className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-2 block">
+                  Categoría
+                </label>
+                <div className="flex flex-wrap gap-2">
+                  {categories.map((cat) => (
+                    <button
+                      type="button"
+                      key={cat}
+                      onClick={() => setSelectedCategory(cat)}
+                      className={`px-3 py-1.5 rounded-full text-xs font-semibold transition-all ${
+                        selectedCategory === cat
+                          ? "bg-cyan-600 text-white shadow-md"
+                          : "bg-[#374151] text-gray-300 hover:bg-gray-600"
+                      }`}
+                    >
+                      {cat}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            {/* SECCIÓN 2: FRASCO COMPARTIDO */}
+            <div className="bg-[#1F2937] p-5 rounded-2xl border border-gray-800 shadow-lg space-y-4">
+              <div className="flex justify-between items-center border-b border-gray-700 pb-3">
+                <div>
+                  <h3 className="text-sm font-bold text-cyan-400 flex items-center gap-2">
+                    <Users size={16} /> Frasco Compartido
+                  </h3>
+                  <p className="text-xs text-gray-400 mt-1">
+                    Dividí esta deuda con otra persona
+                  </p>
+                </div>
+                <label className="relative inline-flex items-center cursor-pointer">
+                  <input
+                    type="checkbox"
+                    className="sr-only peer"
+                    checked={isShared}
+                    onChange={() => setIsShared(!isShared)}
+                  />
+                  <div className="w-11 h-6 bg-gray-600 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-cyan-500"></div>
+                </label>
+              </div>
+
+              {isShared && (
+                <div className="pt-2 animate-fade-in">
+                  <label className="text-xs font-bold text-amber-400 uppercase tracking-wider mb-1 block">
+                    Porcentaje a tu cargo (%)
+                  </label>
+                  <div className="flex items-center gap-3">
+                    <input
+                      type="range"
+                      min="1"
+                      max="100"
+                      value={myPercentage}
+                      onChange={(e) => setMyPercentage(e.target.value)}
+                      className="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-amber-500"
+                    />
+                    <span className="bg-[#374151] px-3 py-2 rounded-lg font-mono text-amber-400 font-bold border border-amber-900 w-20 text-center">
+                      {myPercentage}%
+                    </span>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* SECCIÓN 3: NÚMEROS Y FINANZAS */}
+            <div className="bg-[#1F2937] p-5 rounded-2xl border border-gray-800 shadow-lg space-y-4">
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-1 block">
+                    Total Original *
+                  </label>
+                  <div className="relative">
+                    <span className="absolute left-3 top-3.5 text-gray-400 font-bold">
+                      $
+                    </span>
+                    <input
+                      type="number"
+                      required
+                      value={originalAmount}
+                      onChange={(e) => setOriginalAmount(e.target.value)}
+                      className="w-full bg-[#374151] border border-gray-600 rounded-xl p-3.5 pl-8 text-white focus:ring-2 focus:ring-cyan-500 outline-none font-mono text-lg"
+                    />
+                  </div>
+                </div>
+                <div>
+                  <label className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-1 block">
+                    Saldo Actual
+                  </label>
+                  <div className="relative">
+                    <span className="absolute left-3 top-3.5 text-gray-400 font-bold">
+                      $
+                    </span>
+                    <input
+                      type="number"
+                      placeholder="Igual al original"
+                      value={currentBalance}
+                      onChange={(e) => setCurrentBalance(e.target.value)}
+                      className="w-full bg-[#374151] border border-gray-600 rounded-xl p-3.5 pl-8 text-white focus:ring-2 focus:ring-cyan-500 outline-none font-mono text-lg"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-1 block">
+                    Tasa de Interés
+                  </label>
+                  <div className="relative">
+                    <span className="absolute right-3 top-3.5 text-gray-400 font-bold">
+                      %
+                    </span>
+                    <input
+                      type="number"
+                      step="0.1"
+                      value={apr}
+                      onChange={(e) => setApr(e.target.value)}
+                      className="w-full bg-[#374151] border border-gray-600 rounded-xl p-3.5 pr-8 text-white focus:ring-2 focus:ring-cyan-500 outline-none font-mono"
+                    />
+                  </div>
+                </div>
+                <div>
+                  <label className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-1 block">
+                    Pago Mínimo *
+                  </label>
+                  <div className="relative">
+                    <span className="absolute left-3 top-3.5 text-gray-400 font-bold">
+                      $
+                    </span>
+                    <input
+                      type="number"
+                      required
+                      value={minPayment}
+                      onChange={(e) => setMinPayment(e.target.value)}
+                      className="w-full bg-[#374151] border border-gray-600 rounded-xl p-3.5 pl-8 text-white focus:ring-2 focus:ring-cyan-500 outline-none font-mono"
+                    />
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* SECCIÓN 4: TIEMPO */}
+            <div className="bg-[#1F2937] p-5 rounded-2xl border border-gray-800 shadow-lg space-y-4">
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-1 block">
+                    Plazo (Meses)
+                  </label>
+                  <div className="relative">
+                    <span className="absolute right-3 top-3.5 text-gray-400 text-xs">
+                      meses
+                    </span>
+                    <input
+                      type="number"
+                      value={durationMonths}
+                      onChange={(e) => setDurationMonths(e.target.value)}
+                      className="w-full bg-[#374151] border border-gray-600 rounded-xl p-3.5 pr-14 text-white focus:ring-2 focus:ring-cyan-500 outline-none font-mono"
+                    />
+                  </div>
+                </div>
+                <div>
+                  <label className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-1 block">
+                    Día Vencimiento
                   </label>
                   <input
                     type="number"
                     min="1"
-                    max="100"
-                    value={myPercentage}
-                    onChange={(e) => setMyPercentage(e.target.value)}
-                    className="w-full bg-slate-800 border-none rounded-lg p-3 text-white mt-1"
+                    max="31"
+                    value={dueDay}
+                    onChange={(e) => setDueDay(e.target.value)}
+                    className="w-full bg-[#374151] border border-gray-600 rounded-xl p-3.5 text-white focus:ring-2 focus:ring-cyan-500 outline-none font-mono text-center"
                   />
                 </div>
-              )}
+              </div>
             </div>
-
-            {!isIncome && (
-              <>
-                <div className="flex bg-slate-950 rounded-lg p-1 border border-slate-800">
-                  <button
-                    type="button"
-                    onClick={() => setIsShared(false)}
-                    className={`flex-1 py-1.5 rounded-md text-xs font-bold transition-all ${
-                      !isShared ? "bg-slate-800 text-white" : "text-slate-500"
-                    }`}
-                  >
-                    Gasto Personal
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setIsShared(true)}
-                    className={`flex-1 py-1.5 rounded-md text-xs font-bold transition-all ${
-                      isShared
-                        ? "bg-amber-500/20 text-amber-400"
-                        : "text-slate-500"
-                    }`}
-                  >
-                    Gasto Compartido
-                  </button>
-                </div>
-
-                <div>
-                  <label className="text-xs text-slate-400 uppercase">
-                    Categoría
-                  </label>
-                  <select
-                    value={selectedCategory}
-                    onChange={(e) => setSelectedCategory(e.target.value)}
-                    className="w-full bg-slate-800 border-none rounded-lg p-3 text-white mt-1 appearance-none"
-                  >
-                    {defaultCategories.map((cat) => (
-                      <option key={cat} value={cat}>
-                        {cat}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div className="flex gap-4">
-                  <div className="flex-1">
-                    <label className="text-xs text-slate-400 uppercase">
-                      Forma de Pago
-                    </label>
-                    <select
-                      value={selectedEntity}
-                      onChange={(e) => setSelectedEntity(e.target.value)}
-                      className="w-full bg-slate-800 border-none rounded-lg p-3 text-white mt-1"
-                    >
-                      {entities.map((ent) => (
-                        <option key={ent} value={ent}>
-                          {ent}
-                        </option>
-                      ))}
-                      <option value="nueva">+ Agregar nueva...</option>
-                    </select>
-                    {selectedEntity === "nueva" && (
-                      <input
-                        type="text"
-                        value={newEntity}
-                        onChange={(e) => setNewEntity(e.target.value)}
-                        placeholder="Nombre..."
-                        className="w-full bg-slate-700 border-none rounded-lg p-2 text-white mt-2"
-                      />
-                    )}
-                  </div>
-
-                  {selectedEntity !== "Efectivo" && (
-                    <div className="w-1/3">
-                      <label className="text-xs text-slate-400 uppercase">
-                        Cuotas
-                      </label>
-                      <input
-                        type="number"
-                        min="1"
-                        required
-                        value={installments}
-                        onChange={(e) => setInstallments(e.target.value)}
-                        className="w-full bg-slate-800 border-none rounded-lg p-3 text-white mt-1"
-                      />
-                    </div>
-                  )}
-                </div>
-              </>
-            )}
 
             <button
               type="submit"
-              className="w-full bg-lime-500 text-slate-950 font-black py-4 rounded-xl mt-4 flex justify-center gap-2 hover:bg-lime-400"
+              className="w-full bg-cyan-500 text-slate-950 font-black py-4 rounded-xl mt-6 flex justify-center items-center gap-2 hover:bg-cyan-400 shadow-[0_0_20px_rgba(6,182,212,0.4)] transition-all"
             >
-              <PlusCircle size={20} /> Guardar Registro
+              <PlusCircle size={22} /> Guardar Deuda en el Sistema
             </button>
           </form>
         )}
 
+        {/* PESTAÑAS EN CONSTRUCCIÓN PARA LA FASE 2 Y 3 */}
+        {activeTab === "resumen" && (
+          <div className="bg-[#1F2937] p-8 rounded-2xl border border-gray-800 shadow-lg text-center mt-10">
+            <h3 className="text-xl font-bold text-cyan-400 mb-2">
+              ¡Formulario Fase 1 Listo!
+            </h3>
+            <p className="text-gray-400 text-sm mb-4">
+              Ya podés cargar deudas complejas en la base de datos. Tenés{" "}
+              {debts.length} deudas registradas.
+            </p>
+            <p className="text-xs text-amber-500 border border-amber-900 bg-amber-900/20 p-3 rounded-lg">
+              Próximo paso: Armar el Dashboard Visual estilo TinyDebt.
+            </p>
+          </div>
+        )}
+        {activeTab === "estadisticas" && (
+          <div className="p-4 text-center text-slate-500 py-12">
+            Sección Estrategias y Gráficos (Próximamente)
+          </div>
+        )}
         {activeTab === "deseos" && (
-          <div className="p-4 text-center text-slate-500 text-sm py-12">
-            Lista de Deseos (Sin cambios, lista para usar)
+          <div className="p-4 text-center text-slate-500 py-12">
+            Sección Seguimiento (Próximamente)
           </div>
         )}
         {activeTab === "perfil" && (
-          <div className="p-4 text-center text-slate-500 text-sm py-12">
-            Configuración de Perfil (Sin cambios)
+          <div className="p-4 text-center text-slate-500 py-12">
+            Ajustes (Próximamente)
           </div>
         )}
       </div>
 
-      {/* MENÚ DE NAVEGACIÓN INFERIOR (5 BOTONES INTEGRADOS) */}
-      <div className="fixed bottom-0 left-0 right-0 bg-slate-900 border-t border-slate-800 flex justify-around p-2 pb-safe z-50">
+      {/* MENÚ INFERIOR ESTILO TINYDEBT */}
+      <div className="fixed bottom-0 left-0 right-0 bg-[#1F2937] border-t border-gray-800 flex justify-around p-2 pb-safe z-50">
         <button
           onClick={() => setActiveTab("resumen")}
-          className={`flex flex-col items-center p-2 ${
-            activeTab === "resumen" ? "text-lime-400" : "text-slate-500"
+          className={`flex flex-col items-center p-2 transition-colors ${
+            activeTab === "resumen"
+              ? "text-cyan-400"
+              : "text-gray-500 hover:text-gray-400"
           }`}
         >
-          <Wallet size={22} />
-          <span className="text-[9px] mt-1 font-bold uppercase">Billetera</span>
+          <Wallet size={24} strokeWidth={activeTab === "resumen" ? 2.5 : 2} />
+          <span className="text-[10px] mt-1 font-bold">Resumen</span>
         </button>
         <button
           onClick={() => setActiveTab("estadisticas")}
-          className={`flex flex-col items-center p-2 ${
-            activeTab === "estadisticas" ? "text-lime-400" : "text-slate-500"
+          className={`flex flex-col items-center p-2 transition-colors ${
+            activeTab === "estadisticas"
+              ? "text-cyan-400"
+              : "text-gray-500 hover:text-gray-400"
           }`}
         >
-          <BarChart3 size={22} />
-          <span className="text-[9px] mt-1 font-bold uppercase">
-            Estadísticas
-          </span>
+          <BarChart3
+            size={24}
+            strokeWidth={activeTab === "estadisticas" ? 2.5 : 2}
+          />
+          <span className="text-[10px] mt-1 font-bold">Estrategias</span>
         </button>
 
+        {/* BOTÓN FLOTANTE CENTRAL DE AÑADIR */}
         <button
           onClick={() => setActiveTab("agregar")}
-          className="flex flex-col items-center justify-center bg-lime-500 text-slate-950 rounded-full w-12 h-12 -mt-4 shadow-[0_0_15px_rgba(132,204,22,0.3)] border-4 border-slate-950"
+          className="flex flex-col items-center justify-center bg-cyan-500 text-slate-950 rounded-full w-14 h-14 -mt-6 shadow-[0_0_15px_rgba(6,182,212,0.4)] border-4 border-[#111827] hover:scale-105 transition-transform"
         >
-          <PlusCircle size={24} />
+          <PlusCircle size={28} strokeWidth={2.5} />
         </button>
 
         <button
           onClick={() => setActiveTab("deseos")}
-          className={`flex flex-col items-center p-2 ${
-            activeTab === "deseos" ? "text-lime-400" : "text-slate-500"
+          className={`flex flex-col items-center p-2 transition-colors ${
+            activeTab === "deseos"
+              ? "text-cyan-400"
+              : "text-gray-500 hover:text-gray-400"
           }`}
         >
-          <ListTodo size={22} />
-          <span className="text-[9px] mt-1 font-bold uppercase">Deseos</span>
+          <ListTodo size={24} strokeWidth={activeTab === "deseos" ? 2.5 : 2} />
+          <span className="text-[10px] mt-1 font-bold">Deudas</span>
         </button>
         <button
           onClick={() => setActiveTab("perfil")}
-          className={`flex flex-col items-center p-2 ${
-            activeTab === "perfil" ? "text-lime-400" : "text-slate-500"
+          className={`flex flex-col items-center p-2 transition-colors ${
+            activeTab === "perfil"
+              ? "text-cyan-400"
+              : "text-gray-500 hover:text-gray-400"
           }`}
         >
-          <Settings size={22} />
-          <span className="text-[9px] mt-1 font-bold uppercase">Perfil</span>
+          <Settings size={24} strokeWidth={activeTab === "perfil" ? 2.5 : 2} />
+          <span className="text-[10px] mt-1 font-bold">Ajustes</span>
         </button>
       </div>
     </div>
