@@ -10,6 +10,8 @@ import {
   updateDoc,
   query,
   orderBy,
+  where,
+  arrayUnion,
 } from "firebase/firestore";
 import {
   getAuth,
@@ -22,15 +24,14 @@ import {
   PlusCircle,
   Wallet,
   Settings,
-  ListTodo,
+  BarChart3,
   Users,
-  CheckCircle2,
   Target,
-  TrendingDown,
   Trash2,
-  Zap,
-  TrendingUp,
-  LogOut,
+  ArrowUpCircle,
+  ArrowDownCircle,
+  CheckCircle2,
+  Copy,
 } from "lucide-react";
 
 const firebaseConfig = {
@@ -40,7 +41,6 @@ const firebaseConfig = {
   storageBucket: "wealthmanager2026-18f2c.firebasestorage.app",
   messagingSenderId: "48794626488",
   appId: "1:48794626488:web:ddfe4d3ddc77f574a9074d",
-  measurementId: "G-NXL0M6HCY7",
 };
 
 const app = initializeApp(firebaseConfig);
@@ -50,34 +50,35 @@ const auth = getAuth(app);
 export default function WealthManager() {
   const [user, setUser] = useState(null);
   const [activeTab, setActiveTab] = useState("resumen");
-  const [debts, setDebts] = useState([]);
-  const [paymentAmounts, setPaymentAmounts] = useState({});
 
-  // ESTADOS FORMULARIO
-  const [debtName, setDebtName] = useState("");
+  // ESTADOS DE DATOS
+  const [records, setRecords] = useState([]); // Personales (Ingresos y Gastos)
+  const [jars, setJars] = useState([]); // Frascos a los que pertenezco
+  const [sharedDebts, setSharedDebts] = useState([]); // Deudas dentro de los frascos
+
+  // ESTADOS FORMULARIO GENERAL
+  const [isIncome, setIsIncome] = useState(false);
+  const [name, setName] = useState("");
   const categories = [
+    "Sueldo",
+    "Ventas",
     "Tarjeta de Crédito",
-    "Préstamo Personal",
+    "Préstamo",
     "Hogar",
     "Vehículo",
     "Viajes",
-    "Diversión",
-    "Otro",
+    "Servicios",
   ];
-  const [selectedCategory, setSelectedCategory] = useState(categories[0]);
-  const [originalAmount, setOriginalAmount] = useState("");
-  const [currentBalance, setCurrentBalance] = useState("");
-  const [currency, setCurrency] = useState("ARS - Peso Argentino");
-  const [apr, setApr] = useState("0.00");
-  const [minPayment, setMinPayment] = useState("");
-  const [durationMonths, setDurationMonths] = useState("1");
-  const [dueDay, setDueDay] = useState("10");
-  const [isShared, setIsShared] = useState(false);
-  const [myPercentage, setMyPercentage] = useState("50");
+  const [category, setCategory] = useState(categories[2]);
+  const [amount, setAmount] = useState("");
+  const [installments, setInstallments] = useState("1");
+  const [paymentInput, setPaymentInput] = useState({});
 
-  // ESTADOS ESTRATEGIA
-  const [strategy, setStrategy] = useState("snowball"); // "snowball" o "avalanche"
-  const [extraPayment, setExtraPayment] = useState("0");
+  // ESTADOS MULTIJUGADOR (FRASCOS)
+  const [isShared, setIsShared] = useState(false);
+  const [selectedJarId, setSelectedJarId] = useState("");
+  const [newJarName, setNewJarName] = useState("");
+  const [joinCode, setJoinCode] = useState("");
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
@@ -92,611 +93,729 @@ export default function WealthManager() {
     await signInWithPopup(auth, provider).catch(console.error);
   };
 
-  const handleSignOut = () => {
-    signOut(auth).then(() => setUser(null));
-  };
-
   const loadData = async (uid) => {
-    const qTx = query(
-      collection(db, `users/${uid}/debts`),
+    // 1. Cargar Finanzas Personales
+    const qPersonal = query(
+      collection(db, `users/${uid}/finances`),
       orderBy("createdAt", "desc")
     );
-    const snapshotTx = await getDocs(qTx);
-    setDebts(snapshotTx.docs.map((doc) => ({ id: doc.id, ...doc.data() })));
-  };
+    const snapPersonal = await getDocs(qPersonal);
+    setRecords(snapPersonal.docs.map((d) => ({ id: d.id, ...d.data() })));
 
-  const handleAddDebt = async (e) => {
-    e.preventDefault();
-    if (!user) return;
-
-    const myRatio = isShared ? parseFloat(myPercentage) / 100 : 1;
-    const finalOriginal = parseFloat(originalAmount) * myRatio;
-    const finalCurrent = currentBalance
-      ? parseFloat(currentBalance) * myRatio
-      : finalOriginal;
-    const finalMin = parseFloat(minPayment) * myRatio;
-
-    const newDebt = {
-      name: debtName,
-      category: selectedCategory,
-      originalAmount: parseFloat(originalAmount),
-      currentBalance: parseFloat(currentBalance || originalAmount),
-      myResponsibilityAmount: finalCurrent,
-      currency,
-      apr: parseFloat(apr),
-      minPayment: finalMin,
-      durationMonths: parseInt(durationMonths),
-      dueDay: parseInt(dueDay),
-      isShared,
-      myPercentage: isShared ? parseFloat(myPercentage) : 100,
-      createdAt: new Date().toISOString(),
-      status: "active",
-    };
-
-    const docRef = await addDoc(
-      collection(db, `users/${user.uid}/debts`),
-      newDebt
+    // 2. Cargar Frascos del Usuario
+    const qJars = query(
+      collection(db, `shared_jars`),
+      where("members", "array-contains", uid)
     );
-    setDebts([{ id: docRef.id, ...newDebt }, ...debts]);
+    const snapJars = await getDocs(qJars);
+    const loadedJars = snapJars.docs.map((d) => ({ id: d.id, ...d.data() }));
+    setJars(loadedJars);
 
-    setDebtName("");
-    setOriginalAmount("");
-    setCurrentBalance("");
-    setMinPayment("");
-    setApr("0.00");
-    setActiveTab("seguimiento");
-  };
-
-  const handleDeleteDebt = async (id) => {
-    if (window.confirm("¿Seguro que querés eliminar esta deuda?")) {
-      await deleteDoc(doc(db, `users/${user.uid}/debts`, id));
-      setDebts(debts.filter((d) => d.id !== id));
+    // 3. Cargar Deudas de esos Frascos
+    if (loadedJars.length > 0) {
+      const jarIds = loadedJars.map((j) => j.id);
+      const qShared = query(
+        collection(db, `shared_debts`),
+        where("jarId", "in", jarIds)
+      );
+      const snapShared = await getDocs(qShared);
+      setSharedDebts(snapShared.docs.map((d) => ({ id: d.id, ...d.data() })));
     }
   };
 
-  const handleRegisterPayment = async (debt) => {
-    const payAmount = parseFloat(paymentAmounts[debt.id]);
-    if (!payAmount || payAmount <= 0) return;
-
-    const myRatio = debt.isShared ? debt.myPercentage / 100 : 1;
-    const totalPayAmount = payAmount / myRatio;
-
-    const newMyResp = Math.max(0, debt.myResponsibilityAmount - payAmount);
-    const newCurrentBalance = Math.max(0, debt.currentBalance - totalPayAmount);
-
-    const docRef = doc(db, `users/${user.uid}/debts`, debt.id);
-    await updateDoc(docRef, {
-      currentBalance: newCurrentBalance,
-      myResponsibilityAmount: newMyResp,
-      status: newMyResp === 0 ? "paid" : "active",
-    });
-
-    setDebts(
-      debts.map((d) =>
-        d.id === debt.id
-          ? {
-              ...d,
-              currentBalance: newCurrentBalance,
-              myResponsibilityAmount: newMyResp,
-              status: newMyResp === 0 ? "paid" : "active",
-            }
-          : d
-      )
-    );
-    setPaymentAmounts({ ...paymentAmounts, [debt.id]: "" });
+  // -------------------------------------------------------------
+  // LÓGICA DE FRASCOS COMPARTIDOS (MODO MULTIJUGADOR)
+  // -------------------------------------------------------------
+  const handleCreateJar = async (e) => {
+    e.preventDefault();
+    if (!newJarName) return;
+    const code = Math.random().toString(36).substring(2, 8).toUpperCase();
+    const newJar = {
+      name: newJarName,
+      code,
+      members: [user.uid],
+      createdAt: new Date().toISOString(),
+    };
+    const docRef = await addDoc(collection(db, `shared_jars`), newJar);
+    setJars([{ id: docRef.id, ...newJar }, ...jars]);
+    setNewJarName("");
+    alert(`¡Frasco creado! Código de invitación: ${code}`);
   };
 
-  // --------------------------------------------------------
-  // LÓGICA DE DATOS
-  // --------------------------------------------------------
-  const activeDebts = debts.filter((d) => d.status === "active");
-  const totalOriginal = activeDebts.reduce(
-    (acc, d) => acc + d.originalAmount * (d.myPercentage / 100),
-    0
-  );
-  const totalActual = activeDebts.reduce(
-    (acc, d) => acc + d.myResponsibilityAmount,
-    0
-  );
-  const porcentajePagado =
-    totalOriginal > 0
-      ? ((totalOriginal - totalActual) / totalOriginal) * 100
-      : 0;
-  const totalMinimo = activeDebts.reduce((acc, d) => acc + d.minPayment, 0);
+  const handleJoinJar = async (e) => {
+    e.preventDefault();
+    if (!joinCode) return;
+    const q = query(
+      collection(db, `shared_jars`),
+      where("code", "==", joinCode.toUpperCase())
+    );
+    const snap = await getDocs(q);
+    if (!snap.empty) {
+      const jarDoc = snap.docs[0];
+      await updateDoc(jarDoc.ref, { members: arrayUnion(user.uid) });
+      setJars([
+        {
+          id: jarDoc.id,
+          ...jarDoc.data(),
+          members: [...jarDoc.data().members, user.uid],
+        },
+        ...jars,
+      ]);
+      setJoinCode("");
+      alert("¡Te uniste al frasco exitosamente!");
+    } else {
+      alert("Código inválido o frasco inexistente.");
+    }
+  };
 
-  const deudaMayorMonto =
-    activeDebts.length > 0
-      ? activeDebts.reduce((p, c) =>
-          p.myResponsibilityAmount > c.myResponsibilityAmount ? p : c
+  // -------------------------------------------------------------
+  // LÓGICA DE AÑADIR DEUDA / INGRESO
+  // -------------------------------------------------------------
+  const handleSaveRecord = async (e) => {
+    e.preventDefault();
+    if (!user) return;
+
+    const finalAmount = parseFloat(amount);
+    const monthlyMin = isIncome ? 0 : finalAmount / parseInt(installments);
+
+    const recordData = {
+      name,
+      category: isIncome ? "Ingreso" : category,
+      originalAmount: finalAmount,
+      currentBalance: isIncome ? 0 : finalAmount,
+      monthlyMin,
+      installments: parseInt(installments),
+      createdAt: new Date().toISOString(),
+      status: "active",
+      creatorId: user.uid,
+    };
+
+    if (!isIncome && isShared && selectedJarId) {
+      // Guardar como deuda compartida
+      recordData.jarId = selectedJarId;
+      const docRef = await addDoc(collection(db, `shared_debts`), recordData);
+      setSharedDebts([{ id: docRef.id, ...recordData }, ...sharedDebts]);
+    } else {
+      // Guardar como personal (Ingreso o Deuda)
+      recordData.type = isIncome ? "income" : "debt";
+      const docRef = await addDoc(
+        collection(db, `users/${user.uid}/finances`),
+        recordData
+      );
+      setRecords([{ id: docRef.id, ...recordData }, ...records]);
+    }
+
+    setName("");
+    setAmount("");
+    setInstallments("1");
+    setIsShared(false);
+    setActiveTab(isShared ? "frascos" : "resumen");
+  };
+
+  // -------------------------------------------------------------
+  // MOTOR DE PAGOS
+  // -------------------------------------------------------------
+  const handlePay = async (record, isSharedDebt = false) => {
+    const payAmt = parseFloat(paymentInput[record.id]);
+    if (!payAmt || payAmt <= 0) return;
+
+    const newBalance = Math.max(0, record.currentBalance - payAmt);
+    const updateData = {
+      currentBalance: newBalance,
+      status: newBalance === 0 ? "paid" : "active",
+    };
+
+    if (isSharedDebt) {
+      await updateDoc(doc(db, `shared_debts`, record.id), updateData);
+      setSharedDebts(
+        sharedDebts.map((r) =>
+          r.id === record.id ? { ...r, ...updateData } : r
         )
-      : null;
+      );
+    } else {
+      await updateDoc(
+        doc(db, `users/${user.uid}/finances`, record.id),
+        updateData
+      );
+      setRecords(
+        records.map((r) => (r.id === record.id ? { ...r, ...updateData } : r))
+      );
+    }
+    setPaymentInput({ ...paymentInput, [record.id]: "" });
+  };
 
-  // ORDENAMIENTO DE ESTRATEGIAS
-  const sortedDebts = [...activeDebts].sort((a, b) => {
-    if (strategy === "snowball")
-      return a.myResponsibilityAmount - b.myResponsibilityAmount;
-    return b.apr - a.apr; // Avalanche (Mayor interés primero)
-  });
-  const targetDebt = sortedDebts.length > 0 ? sortedDebts[0] : null;
+  const handleDelete = async (id, isSharedDebt = false) => {
+    if (!window.confirm("¿Eliminar este registro?")) return;
+    if (isSharedDebt) {
+      await deleteDoc(doc(db, `shared_debts`, id));
+      setSharedDebts(sharedDebts.filter((r) => r.id !== id));
+    } else {
+      await deleteDoc(doc(db, `users/${user.uid}/finances`, id));
+      setRecords(records.filter((r) => r.id !== id));
+    }
+  };
 
-  if (!user) {
+  // -------------------------------------------------------------
+  // MATEMÁTICA Y GRÁFICOS DEL ECOSISTEMA
+  // -------------------------------------------------------------
+  const incomes = records
+    .filter((r) => r.type === "income")
+    .reduce((acc, r) => acc + r.originalAmount, 0);
+  const activeDebts = records.filter(
+    (r) => r.type === "debt" && r.status === "active"
+  );
+
+  const totalDebtBalance = activeDebts.reduce(
+    (acc, r) => acc + r.currentBalance,
+    0
+  );
+  const totalOriginalDebt = records
+    .filter((r) => r.type === "debt")
+    .reduce((acc, r) => acc + r.originalAmount, 0);
+
+  const netBalance = incomes - (totalOriginalDebt - totalDebtBalance);
+  const porcentajePagado =
+    totalOriginalDebt > 0
+      ? ((totalOriginalDebt - totalDebtBalance) / totalOriginalDebt) * 100
+      : 0;
+
+  const projectionData = [
+    {
+      label: "Mes 1",
+      amt: activeDebts.reduce((acc, d) => acc + d.monthlyMin, 0),
+    },
+    {
+      label: "Mes 2",
+      amt: activeDebts.reduce(
+        (acc, d) => acc + (d.installments >= 2 ? d.monthlyMin : 0),
+        0
+      ),
+    },
+    {
+      label: "Mes 3",
+      amt: activeDebts.reduce(
+        (acc, d) => acc + (d.installments >= 3 ? d.monthlyMin : 0),
+        0
+      ),
+    },
+    {
+      label: "Mes 4",
+      amt: activeDebts.reduce(
+        (acc, d) => acc + (d.installments >= 4 ? d.monthlyMin : 0),
+        0
+      ),
+    },
+  ];
+  const maxProj = Math.max(...projectionData.map((p) => p.amt), 1);
+
+  if (!user)
     return (
-      <div className="min-h-screen bg-[#0F172A] flex flex-col items-center justify-center p-6 font-sans">
-        <h1 className="text-3xl font-black text-cyan-400 mb-2">
-          Wealth Manager
-        </h1>
-        <p className="text-gray-400 mb-8 text-sm text-center">
-          Gestión inteligente de finanzas y deudas compartidas.
-        </p>
+      <div className="min-h-screen bg-[#0F172A] flex justify-center items-center p-6">
         <button
           onClick={loginWithGoogle}
-          className="w-full bg-white text-[#0F172A] font-bold py-4 rounded-xl flex items-center justify-center gap-3 hover:bg-gray-200 transition-colors"
+          className="bg-white text-black p-4 rounded-xl font-bold w-full"
         >
-          Continuar con Google
+          Ingresar con Google
         </button>
       </div>
     );
-  }
 
   return (
-    <div className="min-h-screen bg-[#111827] text-slate-100 font-sans pb-24">
-      {/* HEADER */}
-      <div className="bg-[#1F2937] p-5 sticky top-0 z-10 border-b border-gray-800 flex justify-between items-center shadow-md">
-        <div>
-          <h2 className="text-2xl font-bold text-white tracking-tight capitalize">
-            {activeTab === "agregar"
-              ? "Añadir Deuda"
-              : activeTab === "seguimiento"
-              ? "Deudas"
-              : activeTab === "estrategias"
-              ? "Estrategia Activa"
-              : activeTab === "resumen"
-              ? "¡Hola!"
-              : activeTab}
-          </h2>
-          {activeTab === "resumen" && (
-            <p className="text-xs text-gray-400 mt-0.5">
-              Su resumen financiero
-            </p>
-          )}
-          {activeTab === "estrategias" && (
-            <p className="text-xs text-gray-400 mt-0.5">Optimizá tus pagos</p>
-          )}
-        </div>
-        <div className="w-10 h-10 bg-cyan-900 rounded-full flex items-center justify-center text-cyan-400 font-bold border border-cyan-700 shadow-[0_0_10px_rgba(6,182,212,0.2)]">
-          {user.photoURL ? (
-            <img
-              src={user.photoURL}
-              alt="perfil"
-              className="w-full h-full rounded-full"
-            />
-          ) : (
-            user.displayName?.charAt(0).toUpperCase()
-          )}
+    <div className="min-h-screen bg-[#111827] text-slate-100 pb-24 font-sans">
+      <div className="bg-[#1F2937] p-5 sticky top-0 z-10 border-b border-gray-800 shadow-md flex justify-between items-center">
+        <h2 className="text-xl font-bold text-white capitalize">{activeTab}</h2>
+        <div className="w-8 h-8 bg-cyan-900 rounded-full flex items-center justify-center text-cyan-400 font-bold border border-cyan-700">
+          {user.displayName?.charAt(0)}
         </div>
       </div>
 
       <div className="p-4 space-y-4">
-        {/* ======================= RESUMEN ======================= */}
+        {/* ================= RESUMEN GLOBAL ================= */}
         {activeTab === "resumen" && (
           <div className="space-y-4 animate-fade-in">
-            <div className="bg-[#1F2937] p-5 rounded-2xl border border-gray-800 shadow-lg relative overflow-hidden">
-              <div className="absolute top-4 right-4 bg-cyan-500/20 text-cyan-400 text-[10px] font-bold px-2 py-1 rounded">
-                PRO
-              </div>
-              <h3 className="text-lg font-bold text-white mb-4">
-                Progreso de Deuda
-              </h3>
-              <div className="flex justify-between items-center">
-                <div className="space-y-4">
-                  <div>
-                    <p className="text-xs text-gray-400 mb-1">Deuda Total</p>
-                    <p className="text-3xl font-black text-cyan-400">
-                      $
-                      {totalActual.toLocaleString("es-AR", {
-                        minimumFractionDigits: 2,
-                      })}
-                    </p>
-                  </div>
-                  <div>
-                    <p className="text-xs text-gray-400 mb-0.5">
-                      Mínimo Mensual
-                    </p>
-                    <p className="text-sm font-bold text-white">
-                      ${totalMinimo.toLocaleString("es-AR")}
-                    </p>
-                  </div>
-                </div>
-                <div className="relative w-32 h-32 flex-shrink-0">
-                  <svg className="w-full h-full transform -rotate-90">
-                    <circle
-                      cx="64"
-                      cy="64"
-                      r="56"
-                      stroke="currentColor"
-                      strokeWidth="12"
-                      fill="transparent"
-                      className="text-gray-700"
-                    />
-                    <circle
-                      cx="64"
-                      cy="64"
-                      r="56"
-                      stroke="currentColor"
-                      strokeWidth="12"
-                      fill="transparent"
-                      strokeDasharray={2 * Math.PI * 56}
-                      strokeDashoffset={
-                        2 * Math.PI * 56 -
-                        (porcentajePagado / 100) * (2 * Math.PI * 56)
-                      }
-                      className="text-cyan-500 transition-all duration-1000"
-                      strokeLinecap="round"
-                    />
-                  </svg>
-                  <div className="absolute inset-0 flex flex-col items-center justify-center">
-                    <span className="text-2xl font-black text-white">
-                      {Math.round(porcentajePagado)}%
-                    </span>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <div className="bg-[#1F2937] p-4 rounded-xl border border-gray-800 flex gap-4 items-start border-l-4 border-l-cyan-500">
-              <div className="bg-cyan-500/20 p-2 rounded-full mt-1">
-                <Target className="text-cyan-400" size={18} />
-              </div>
-              <div>
-                <p className="text-sm font-bold text-white mb-1">
-                  Concéntrese en{" "}
-                  {deudaMayorMonto ? deudaMayorMonto.name : "Tus metas"}
+            <div className="grid grid-cols-2 gap-4">
+              <div className="bg-[#1F2937] rounded-2xl p-4 border border-gray-800 shadow-lg">
+                <h3 className="text-gray-400 text-xs mb-1 uppercase tracking-wide">
+                  Saldo Líquido
+                </h3>
+                <p
+                  className={`text-2xl font-black ${
+                    netBalance >= 0 ? "text-emerald-400" : "text-red-400"
+                  }`}
+                >
+                  ${netBalance.toLocaleString("es-AR")}
                 </p>
-                <p className="text-xs text-gray-400">
-                  {deudaMayorMonto
-                    ? `Representa tu mayor carga con $${deudaMayorMonto.myResponsibilityAmount.toLocaleString(
-                        "es-AR"
-                      )}.`
-                    : "Estás libre de deudas. ¡Ahorrá!"}
-                </p>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* ======================= ESTRATEGIAS ======================= */}
-        {activeTab === "estrategias" && (
-          <div className="space-y-4 animate-fade-in">
-            <h3 className="text-sm font-bold text-gray-300 uppercase tracking-wider ml-1">
-              Elegir Método
-            </h3>
-
-            <div
-              onClick={() => setStrategy("avalanche")}
-              className={`p-4 rounded-2xl border cursor-pointer transition-all ${
-                strategy === "avalanche"
-                  ? "bg-cyan-900/30 border-cyan-500"
-                  : "bg-[#1F2937] border-gray-800"
-              }`}
-            >
-              <div className="flex items-center justify-between mb-2">
-                <h4 className="font-bold text-white flex items-center gap-2">
-                  <TrendingDown size={18} className="text-cyan-400" /> Avalancha
-                  de Deuda
-                </h4>
-                {strategy === "avalanche" && (
-                  <CheckCircle2 size={18} className="text-cyan-400" />
-                )}
-              </div>
-              <p className="text-xs text-gray-400 leading-relaxed">
-                Pague primero las deudas con las tasas de interés más altas
-                (APR) para minimizar el total pagado a largo plazo.
-              </p>
-            </div>
-
-            <div
-              onClick={() => setStrategy("snowball")}
-              className={`p-4 rounded-2xl border cursor-pointer transition-all ${
-                strategy === "snowball"
-                  ? "bg-cyan-900/30 border-cyan-500"
-                  : "bg-[#1F2937] border-gray-800"
-              }`}
-            >
-              <div className="flex items-center justify-between mb-2">
-                <h4 className="font-bold text-white flex items-center gap-2">
-                  <TrendingUp size={18} className="text-cyan-400" /> Bola de
-                  Nieve
-                </h4>
-                {strategy === "snowball" && (
-                  <CheckCircle2 size={18} className="text-cyan-400" />
-                )}
-              </div>
-              <p className="text-xs text-gray-400 leading-relaxed">
-                Pague primero las deudas más pequeñas para generar impulso y
-                mantenerse motivado con victorias rápidas.
-              </p>
-            </div>
-
-            <div className="bg-[#1F2937] p-5 rounded-2xl border border-gray-800 shadow-lg mt-6">
-              <h3 className="text-sm font-bold text-cyan-400 flex items-center gap-2 mb-4">
-                <Zap size={18} /> Calculadora "Qué Pasaría Si"
-              </h3>
-              <p className="text-xs text-gray-400 mb-3">
-                Pago mensual adicional (sobrante):
-              </p>
-
-              <div className="flex items-center gap-3 mb-6">
-                <input
-                  type="range"
-                  min="0"
-                  max="500000"
-                  step="5000"
-                  value={extraPayment}
-                  onChange={(e) => setExtraPayment(e.target.value)}
-                  className="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-cyan-500"
-                />
-                <span className="bg-[#374151] px-3 py-2 rounded-lg font-mono text-cyan-400 font-bold border border-cyan-900 min-w-[90px] text-center">
-                  ${parseInt(extraPayment).toLocaleString("es-AR")}
+                <span className="text-[10px] text-gray-500">
+                  Ingresos - Pagos
                 </span>
               </div>
+              <div className="bg-[#1F2937] rounded-2xl p-4 border border-gray-800 shadow-lg">
+                <h3 className="text-gray-400 text-xs mb-1 uppercase tracking-wide">
+                  Deuda Personal
+                </h3>
+                <p className="text-2xl font-black text-rose-400">
+                  ${totalDebtBalance.toLocaleString("es-AR")}
+                </p>
+                <span className="text-[10px] text-gray-500">
+                  Saldo Restante
+                </span>
+              </div>
+            </div>
 
-              {targetDebt ? (
-                <div className="bg-[#111827] p-4 rounded-xl border border-gray-700">
-                  <p className="text-xs text-gray-400 mb-2">
-                    Tu objetivo prioritario actual es:
+            <div className="bg-[#1F2937] p-5 rounded-2xl border border-gray-800 flex justify-between items-center shadow-lg">
+              <div>
+                <p className="text-xs text-gray-400">
+                  Progreso Total (Personal)
+                </p>
+                <p className="text-2xl font-black text-cyan-400">
+                  {Math.round(porcentajePagado)}% Pagado
+                </p>
+              </div>
+              <div className="relative w-20 h-20">
+                <svg className="w-full h-full transform -rotate-90">
+                  <circle
+                    cx="40"
+                    cy="40"
+                    r="34"
+                    stroke="currentColor"
+                    strokeWidth="8"
+                    fill="transparent"
+                    className="text-gray-700"
+                  />
+                  <circle
+                    cx="40"
+                    cy="40"
+                    r="34"
+                    stroke="currentColor"
+                    strokeWidth="8"
+                    fill="transparent"
+                    strokeDasharray={213}
+                    strokeDashoffset={213 - (porcentajePagado / 100) * 213}
+                    className="text-cyan-500 transition-all duration-1000"
+                    strokeLinecap="round"
+                  />
+                </svg>
+              </div>
+            </div>
+
+            <h3 className="font-bold text-gray-300 mt-6">Tus Deudas Activas</h3>
+            {activeDebts.length === 0 && (
+              <p className="text-sm text-emerald-500 text-center py-4">
+                ¡No tenés deudas personales activas!
+              </p>
+            )}
+            {activeDebts.map((d) => (
+              <div
+                key={d.id}
+                className="bg-[#1F2937] p-4 rounded-xl border border-gray-800 flex flex-col gap-3 shadow-md"
+              >
+                <div className="flex justify-between">
+                  <div>
+                    <p className="font-bold">{d.name}</p>
+                    <p className="text-xs text-gray-400">
+                      {d.category} • Cuota de {d.installments}
+                    </p>
+                  </div>
+                  <p className="font-bold text-rose-400">
+                    ${d.currentBalance.toLocaleString("es-AR")}
                   </p>
-                  <p className="text-lg font-bold text-white">
-                    {targetDebt.name}
-                  </p>
-                  <div className="flex justify-between mt-2 pt-2 border-t border-gray-800 text-xs">
-                    <span className="text-gray-500">A pagar este mes:</span>
-                    <span className="font-bold text-emerald-400">
-                      $
-                      {(
-                        targetDebt.minPayment + parseInt(extraPayment)
-                      ).toLocaleString("es-AR")}
+                </div>
+                <div className="flex gap-2 mt-2">
+                  <input
+                    type="number"
+                    placeholder={`Mín: $${d.monthlyMin.toLocaleString(
+                      "es-AR"
+                    )}`}
+                    onChange={(e) =>
+                      setPaymentInput({
+                        ...paymentInput,
+                        [d.id]: e.target.value,
+                      })
+                    }
+                    className="w-full bg-[#111827] border border-gray-700 rounded-lg px-3 text-sm text-white focus:ring-1 focus:ring-cyan-500 outline-none"
+                  />
+                  <button
+                    onClick={() => handlePay(d, false)}
+                    className="bg-cyan-600 px-4 py-2 rounded-lg text-xs font-bold shadow hover:bg-cyan-500"
+                  >
+                    Abonar
+                  </button>
+                  <button
+                    onClick={() => handleDelete(d.id, false)}
+                    className="bg-red-500/10 text-red-500 px-3 rounded-lg hover:bg-red-500/20"
+                  >
+                    <Trash2 size={16} />
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* ================= GRÁFICOS Y ANÁLISIS ================= */}
+        {activeTab === "gráficos" && (
+          <div className="space-y-6 animate-fade-in">
+            <div className="bg-[#1F2937] p-5 rounded-2xl border border-gray-800 shadow-lg">
+              <h3 className="text-sm font-bold text-gray-400 uppercase tracking-wider mb-4">
+                Proyección Mensual (Cuotas)
+              </h3>
+              <div className="flex justify-around items-end h-40 border-b border-gray-700 pb-2">
+                {projectionData.map((p, i) => (
+                  <div
+                    key={i}
+                    className="flex flex-col items-center w-1/5 group"
+                  >
+                    <span className="text-[10px] text-cyan-400 mb-1 opacity-0 group-hover:opacity-100 transition-all font-mono">
+                      ${Math.round(p.amt).toLocaleString("es-AR")}
+                    </span>
+                    <div
+                      style={{
+                        height: `${Math.max((p.amt / maxProj) * 100, 5)}%`,
+                      }}
+                      className="w-full bg-cyan-600 rounded-t-sm hover:bg-cyan-400 transition-colors"
+                    ></div>
+                    <span className="text-[10px] text-gray-400 mt-2 font-bold">
+                      {p.label}
                     </span>
                   </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="bg-[#1F2937] p-5 rounded-2xl border border-gray-800 shadow-lg space-y-5">
+              <h3 className="text-sm font-bold text-gray-400 uppercase tracking-wider">
+                Balance Histórico
+              </h3>
+              <div className="flex items-center gap-4">
+                <ArrowUpCircle className="text-emerald-500" size={32} />
+                <div>
+                  <p className="text-xs text-gray-400">
+                    Total Ingresos Registrados
+                  </p>
+                  <p className="font-bold text-emerald-400">
+                    ${incomes.toLocaleString("es-AR")}
+                  </p>
                 </div>
-              ) : (
-                <p className="text-xs text-emerald-500 text-center">
-                  ¡No tenés deudas para aplicar estrategias!
-                </p>
-              )}
+              </div>
+              <div className="flex items-center gap-4">
+                <ArrowDownCircle className="text-rose-500" size={32} />
+                <div>
+                  <p className="text-xs text-gray-400">Total Deuda Adquirida</p>
+                  <p className="font-bold text-rose-400">
+                    ${totalOriginalDebt.toLocaleString("es-AR")}
+                  </p>
+                </div>
+              </div>
             </div>
           </div>
         )}
 
-        {/* ======================= DEUDAS (SEGUIMIENTO) ======================= */}
-        {activeTab === "seguimiento" && (
-          <div className="space-y-4 animate-fade-in">
-            {debts.length === 0 ? (
-              <div className="text-center py-12">
-                <p className="text-gray-500 mb-4">
-                  Aún no hay deudas registradas.
-                </p>
+        {/* ================= FRASCOS COMPARTIDOS (NUEVO MOTOR) ================= */}
+        {activeTab === "frascos" && (
+          <div className="space-y-5 animate-fade-in">
+            {/* PANEL DE CONEXIÓN */}
+            <div className="grid grid-cols-2 gap-4">
+              <form
+                onSubmit={handleCreateJar}
+                className="bg-gradient-to-br from-amber-600 to-amber-800 p-4 rounded-2xl shadow-lg border border-amber-500/50"
+              >
+                <h3 className="font-bold text-white text-sm mb-2">
+                  Crear Frasco
+                </h3>
+                <input
+                  type="text"
+                  placeholder="Ej: Viaje Bariloche"
+                  value={newJarName}
+                  onChange={(e) => setNewJarName(e.target.value)}
+                  className="w-full bg-black/20 border border-amber-400/30 rounded-lg p-2 text-white text-xs mb-2 outline-none"
+                />
                 <button
-                  onClick={() => setActiveTab("agregar")}
-                  className="bg-cyan-500 text-slate-900 font-bold px-6 py-2 rounded-lg"
+                  type="submit"
+                  className="w-full bg-amber-500 text-amber-950 font-bold text-xs py-2 rounded-lg shadow"
                 >
-                  Añadir tu primera deuda
+                  Generar Código
                 </button>
-              </div>
-            ) : (
-              debts.map((debt) => (
-                <div
-                  key={debt.id}
-                  className={`bg-[#1F2937] p-5 rounded-2xl border ${
-                    debt.status === "paid"
-                      ? "border-emerald-500/30 opacity-70"
-                      : "border-gray-800"
-                  } shadow-lg`}
+              </form>
+
+              <form
+                onSubmit={handleJoinJar}
+                className="bg-[#1F2937] p-4 rounded-2xl shadow-lg border border-gray-700"
+              >
+                <h3 className="font-bold text-cyan-400 text-sm mb-2">
+                  Unirse a Frasco
+                </h3>
+                <input
+                  type="text"
+                  placeholder="Código de 6 letras"
+                  value={joinCode}
+                  onChange={(e) => setJoinCode(e.target.value)}
+                  className="w-full bg-[#111827] border border-gray-600 rounded-lg p-2 text-white text-xs mb-2 outline-none font-mono uppercase"
+                />
+                <button
+                  type="submit"
+                  className="w-full bg-cyan-600 text-white font-bold text-xs py-2 rounded-lg shadow"
                 >
-                  <div className="flex justify-between items-start mb-3">
-                    <div>
-                      <h3
-                        className={`text-lg font-bold ${
-                          debt.status === "paid"
-                            ? "text-emerald-500 line-through"
-                            : "text-white"
+                  Conectar
+                </button>
+              </form>
+            </div>
+
+            {/* LISTA DE FRASCOS Y SUS DEUDAS */}
+            {jars.length === 0 ? (
+              <p className="text-center text-gray-500 py-10">
+                No estás conectado a ningún frasco compartido.
+              </p>
+            ) : (
+              jars.map((jar) => {
+                const jarDebts = sharedDebts.filter((d) => d.jarId === jar.id);
+                const jarTotal = jarDebts.reduce(
+                  (acc, d) => acc + d.currentBalance,
+                  0
+                );
+
+                return (
+                  <div
+                    key={jar.id}
+                    className="bg-[#1F2937] p-5 rounded-2xl border border-amber-500/30 shadow-xl relative overflow-hidden"
+                  >
+                    <div className="absolute top-0 left-0 w-1 h-full bg-amber-500"></div>
+                    <div className="flex justify-between items-start mb-4">
+                      <div>
+                        <h4 className="font-bold text-white text-lg">
+                          {jar.name}
+                        </h4>
+                        <p className="text-xs text-gray-400 mt-0.5">
+                          ID:{" "}
+                          <span className="font-mono bg-black/30 px-1 rounded text-amber-400">
+                            {jar.code}
+                          </span>
+                        </p>
+                      </div>
+                      <div className="text-right">
+                        <p className="text-[10px] text-gray-500 uppercase">
+                          Deuda del Frasco
+                        </p>
+                        <p className="font-black text-amber-400">
+                          ${jarTotal.toLocaleString("es-AR")}
+                        </p>
+                      </div>
+                    </div>
+
+                    {jarDebts.map((d) => (
+                      <div
+                        key={d.id}
+                        className={`p-3 rounded-xl mt-2 flex flex-col gap-2 ${
+                          d.status === "paid"
+                            ? "bg-emerald-900/20 border border-emerald-500/20"
+                            : "bg-[#111827] border border-gray-700"
                         }`}
                       >
-                        {debt.name}
-                      </h3>
-                      <p className="text-xs text-gray-400 mt-1 flex items-center gap-2">
-                        <span className="bg-[#374151] px-2 py-0.5 rounded text-[10px]">
-                          {debt.category}
-                        </span>
-                        {debt.isShared && (
-                          <span className="bg-amber-500/20 text-amber-400 border border-amber-500/30 px-1 rounded text-[9px]">
-                            Compartido ({debt.myPercentage}%)
+                        <div className="flex justify-between items-center">
+                          <span
+                            className={`text-sm font-bold ${
+                              d.status === "paid"
+                                ? "text-emerald-500 line-through"
+                                : "text-white"
+                            }`}
+                          >
+                            {d.name}
                           </span>
+                          <span
+                            className={`text-sm font-mono ${
+                              d.status === "paid"
+                                ? "text-emerald-500"
+                                : "text-rose-400"
+                            }`}
+                          >
+                            ${d.currentBalance.toLocaleString("es-AR")}
+                          </span>
+                        </div>
+                        {d.status === "active" && (
+                          <div className="flex gap-2">
+                            <input
+                              type="number"
+                              placeholder="Pago conjunto..."
+                              onChange={(e) =>
+                                setPaymentInput({
+                                  ...paymentInput,
+                                  [d.id]: e.target.value,
+                                })
+                              }
+                              className="w-full bg-[#1F2937] border border-gray-600 rounded-lg px-2 text-xs text-white"
+                            />
+                            <button
+                              onClick={() => handlePay(d, true)}
+                              className="bg-amber-600 px-3 py-1.5 rounded-lg text-xs font-bold text-white"
+                            >
+                              Abonar
+                            </button>
+                            <button
+                              onClick={() => handleDelete(d.id, true)}
+                              className="bg-red-500/10 text-red-500 px-2 rounded-lg"
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          </div>
                         )}
-                      </p>
-                    </div>
-                    <button
-                      onClick={() => handleDeleteDebt(debt.id)}
-                      className="text-gray-600 hover:text-red-500"
-                    >
-                      <Trash2 size={18} />
-                    </button>
-                  </div>
-                  <div className="mb-4">
-                    <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-1">
-                      Saldo Actual
-                    </p>
-                    <p
-                      className={`text-2xl font-black ${
-                        debt.status === "paid"
-                          ? "text-emerald-500"
-                          : "text-cyan-400"
-                      }`}
-                    >
-                      $
-                      {debt.myResponsibilityAmount.toLocaleString("es-AR", {
-                        minimumFractionDigits: 2,
-                      })}
-                    </p>
-                  </div>
-                  {debt.status === "active" ? (
-                    <div className="bg-[#111827] p-3 rounded-xl border border-gray-700 flex flex-col gap-3">
-                      <div className="flex justify-between items-center text-xs">
-                        <span className="text-gray-400">Pago Mínimo:</span>
-                        <span className="font-bold text-gray-200">
-                          ${debt.minPayment.toLocaleString("es-AR")}
-                        </span>
                       </div>
-                      <div className="flex gap-2">
-                        <input
-                          type="number"
-                          placeholder="Monto..."
-                          value={paymentAmounts[debt.id] || ""}
-                          onChange={(e) =>
-                            setPaymentAmounts({
-                              ...paymentAmounts,
-                              [debt.id]: e.target.value,
-                            })
-                          }
-                          className="w-full bg-[#1F2937] border border-cyan-900 rounded-lg py-2 px-3 text-white text-sm focus:outline-none focus:ring-1 focus:ring-cyan-500"
-                        />
-                        <button
-                          onClick={() => handleRegisterPayment(debt)}
-                          className="bg-cyan-600 hover:bg-cyan-500 text-white font-bold px-4 py-2 rounded-lg text-xs shadow"
-                        >
-                          Pagar
-                        </button>
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="bg-emerald-500/10 p-3 rounded-xl border border-emerald-500/20 flex items-center justify-center gap-2 text-emerald-400 font-bold text-sm">
-                      <CheckCircle2 size={18} /> ¡Deuda Saldada!
-                    </div>
-                  )}
-                </div>
-              ))
+                    ))}
+                  </div>
+                );
+              })
             )}
           </div>
         )}
 
-        {/* ======================= AGREGAR ======================= */}
+        {/* ================= AGREGAR (FORMULARIO INTELIGENTE) ================= */}
         {activeTab === "agregar" && (
-          <form onSubmit={handleAddDebt} className="space-y-5 animate-fade-in">
-            {/* Componente idéntico a la fase anterior - Minimizado para el ejemplo */}
-            <div className="bg-[#1F2937] p-5 rounded-2xl border border-gray-800 space-y-4">
-              <label className="text-xs font-bold text-gray-400 block">
-                Nombre de la Deuda *
-              </label>
-              <input
-                type="text"
-                required
-                value={debtName}
-                onChange={(e) => setDebtName(e.target.value)}
-                className="w-full bg-[#374151] border border-gray-600 rounded-xl p-3 text-white"
-              />
-              <label className="text-xs font-bold text-gray-400 block mt-2">
-                Frasco Compartido
-              </label>
-              <input
-                type="checkbox"
-                checked={isShared}
-                onChange={() => setIsShared(!isShared)}
-                className="mr-2"
-              />{" "}
-              <span className="text-sm text-gray-300">Dividir deuda</span>
-              {isShared && (
-                <input
-                  type="number"
-                  value={myPercentage}
-                  onChange={(e) => setMyPercentage(e.target.value)}
-                  placeholder="Tu porcentaje %"
-                  className="w-full bg-[#374151] border border-gray-600 rounded-xl p-3 text-white mt-2"
-                />
-              )}
-              <div className="grid grid-cols-2 gap-4 mt-2">
-                <input
-                  type="number"
-                  required
-                  placeholder="Total Original"
-                  value={originalAmount}
-                  onChange={(e) => setOriginalAmount(e.target.value)}
-                  className="bg-[#374151] rounded-xl p-3 text-white w-full"
-                />
-                <input
-                  type="number"
-                  placeholder="Saldo Actual"
-                  value={currentBalance}
-                  onChange={(e) => setCurrentBalance(e.target.value)}
-                  className="bg-[#374151] rounded-xl p-3 text-white w-full"
-                />
-                <input
-                  type="number"
-                  step="0.1"
-                  placeholder="Interés %"
-                  value={apr}
-                  onChange={(e) => setApr(e.target.value)}
-                  className="bg-[#374151] rounded-xl p-3 text-white w-full"
-                />
-                <input
-                  type="number"
-                  required
-                  placeholder="Pago Mínimo"
-                  value={minPayment}
-                  onChange={(e) => setMinPayment(e.target.value)}
-                  className="bg-[#374151] rounded-xl p-3 text-white w-full"
-                />
-              </div>
+          <form
+            onSubmit={handleSaveRecord}
+            className="space-y-5 animate-fade-in"
+          >
+            <div className="flex bg-[#1F2937] p-1 rounded-xl border border-gray-800">
               <button
-                type="submit"
-                className="w-full bg-cyan-500 text-slate-950 font-black py-4 rounded-xl mt-4"
+                type="button"
+                onClick={() => setIsIncome(false)}
+                className={`flex-1 py-2 rounded-lg text-sm font-bold transition-colors ${
+                  !isIncome
+                    ? "bg-rose-500 text-white shadow-md"
+                    : "text-gray-500"
+                }`}
               >
-                Guardar Deuda
+                Deuda / Gasto
+              </button>
+              <button
+                type="button"
+                onClick={() => setIsIncome(true)}
+                className={`flex-1 py-2 rounded-lg text-sm font-bold transition-colors ${
+                  isIncome
+                    ? "bg-emerald-500 text-white shadow-md"
+                    : "text-gray-500"
+                }`}
+              >
+                Ingreso
               </button>
             </div>
-          </form>
-        )}
 
-        {/* ======================= AJUSTES ======================= */}
-        {activeTab === "ajustes" && (
-          <div className="space-y-4 animate-fade-in">
-            <div className="bg-[#1F2937] p-5 rounded-2xl border border-gray-800 shadow-lg flex items-center gap-4">
-              <img
-                src={user.photoURL || "https://via.placeholder.com/150"}
-                alt="Avatar"
-                className="w-16 h-16 rounded-full border-2 border-cyan-500"
-              />
+            <div className="bg-[#1F2937] p-5 rounded-2xl border border-gray-800 shadow-lg space-y-4">
               <div>
-                <h3 className="font-bold text-white text-lg">
-                  {user.displayName}
-                </h3>
-                <p className="text-xs text-gray-400">{user.email}</p>
-                <p className="text-[10px] text-cyan-500 mt-1 uppercase font-bold">
-                  Miembro PRO
-                </p>
+                <label className="text-xs font-bold text-gray-400 uppercase mb-1 block">
+                  Concepto *
+                </label>
+                <input
+                  type="text"
+                  required
+                  placeholder="Ej: Sueldo, Tarjeta, Compra..."
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  className="w-full bg-[#374151] border border-gray-600 rounded-xl p-3.5 text-white outline-none focus:ring-1 focus:ring-cyan-500"
+                />
               </div>
-            </div>
 
-            <div className="bg-[#1F2937] rounded-2xl border border-gray-800 shadow-lg overflow-hidden">
-              <div className="p-4 border-b border-gray-700/50 flex justify-between items-center hover:bg-[#374151] cursor-pointer">
-                <span className="text-sm font-medium text-gray-300">
-                  Cambiar Idioma
-                </span>
-                <span className="text-xs text-gray-500">Español {">"}</span>
+              <div>
+                <label className="text-xs font-bold text-gray-400 uppercase mb-1 block">
+                  Monto Total *
+                </label>
+                <div className="relative">
+                  <span className="absolute left-3 top-3.5 text-gray-400 font-bold">
+                    $
+                  </span>
+                  <input
+                    type="number"
+                    required
+                    value={amount}
+                    onChange={(e) => setAmount(e.target.value)}
+                    className="w-full bg-[#374151] border border-gray-600 rounded-xl p-3.5 pl-8 text-white font-mono text-lg outline-none focus:ring-1 focus:ring-cyan-500"
+                  />
+                </div>
               </div>
-              <div className="p-4 flex justify-between items-center hover:bg-[#374151] cursor-pointer">
-                <span className="text-sm font-medium text-gray-300">
-                  Moneda
-                </span>
-                <span className="text-xs text-gray-500">ARS {">"}</span>
-              </div>
+
+              {!isIncome && (
+                <>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="text-xs font-bold text-gray-400 uppercase mb-1 block">
+                        Categoría
+                      </label>
+                      <select
+                        value={category}
+                        onChange={(e) => setCategory(e.target.value)}
+                        className="w-full bg-[#374151] border border-gray-600 rounded-xl p-3.5 text-white text-sm outline-none"
+                      >
+                        {categories
+                          .filter((c) => c !== "Sueldo" && c !== "Ventas")
+                          .map((c) => (
+                            <option key={c}>{c}</option>
+                          ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="text-xs font-bold text-gray-400 uppercase mb-1 block">
+                        Cuotas
+                      </label>
+                      <input
+                        type="number"
+                        min="1"
+                        value={installments}
+                        onChange={(e) => setInstallments(e.target.value)}
+                        className="w-full bg-[#374151] border border-gray-600 rounded-xl p-3.5 text-white text-center outline-none"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="border-t border-gray-700 pt-4 mt-2">
+                    <label className="flex items-center justify-between text-sm text-amber-400 font-bold cursor-pointer">
+                      <span className="flex items-center gap-2">
+                        <Users size={16} /> Enviar a Frasco Compartido
+                      </span>
+                      <input
+                        type="checkbox"
+                        checked={isShared}
+                        onChange={() => setIsShared(!isShared)}
+                        className="w-4 h-4 accent-amber-500"
+                      />
+                    </label>
+
+                    {isShared && (
+                      <div className="mt-4 p-3 bg-amber-900/10 border border-amber-500/20 rounded-xl animate-fade-in space-y-3">
+                        <select
+                          value={selectedJarId}
+                          onChange={(e) => setSelectedJarId(e.target.value)}
+                          className="w-full bg-[#111827] border border-gray-700 rounded-lg p-2 text-white text-sm"
+                          required={isShared}
+                        >
+                          <option value="">-- Seleccionar Frasco --</option>
+                          {jars.map((j) => (
+                            <option key={j.id} value={j.id}>
+                              {j.name} (Código: {j.code})
+                            </option>
+                          ))}
+                        </select>
+                        {jars.length === 0 && (
+                          <p className="text-xs text-rose-400">
+                            No tenés frascos. Creá uno en la pestaña Frascos
+                            primero.
+                          </p>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                </>
+              )}
             </div>
 
             <button
-              onClick={handleSignOut}
-              className="w-full bg-red-500/10 border border-red-500/30 text-red-500 font-bold py-4 rounded-xl mt-6 flex justify-center items-center gap-2 hover:bg-red-500/20 transition-all"
+              type="submit"
+              className={`w-full font-black py-4 rounded-xl flex justify-center items-center gap-2 shadow-lg transition-transform hover:scale-[1.02] ${
+                isIncome
+                  ? "bg-emerald-500 text-emerald-950 shadow-[0_0_15px_rgba(16,185,129,0.3)]"
+                  : "bg-cyan-500 text-cyan-950 shadow-[0_0_15px_rgba(6,182,212,0.3)]"
+              }`}
             >
-              <LogOut size={20} /> Cerrar Sesión
+              <PlusCircle size={22} />{" "}
+              {isIncome ? "Registrar Ingreso" : "Registrar Deuda"}
             </button>
-          </div>
+          </form>
         )}
       </div>
 
@@ -710,47 +829,43 @@ export default function WealthManager() {
               : "text-gray-500 hover:text-gray-400"
           }`}
         >
-          <Wallet size={24} />
-          <span className="text-[10px] mt-1 font-bold">Resumen</span>
+          <Wallet size={22} />
+          <span className="text-[9px] mt-1 font-bold">Resumen</span>
         </button>
         <button
-          onClick={() => setActiveTab("estrategias")}
+          onClick={() => setActiveTab("gráficos")}
           className={`flex flex-col items-center p-2 transition-colors ${
-            activeTab === "estrategias"
+            activeTab === "gráficos"
               ? "text-cyan-400"
               : "text-gray-500 hover:text-gray-400"
           }`}
         >
-          <TrendingDown size={24} />
-          <span className="text-[10px] mt-1 font-bold">Estrategias</span>
+          <BarChart3 size={22} />
+          <span className="text-[9px] mt-1 font-bold">Gráficos</span>
         </button>
         <button
           onClick={() => setActiveTab("agregar")}
-          className="flex flex-col items-center justify-center bg-cyan-500 text-slate-950 rounded-full w-14 h-14 -mt-6 shadow-[0_0_15px_rgba(6,182,212,0.4)] border-4 border-[#111827]"
+          className="flex flex-col items-center justify-center bg-cyan-500 text-slate-950 rounded-full w-12 h-12 -mt-4 shadow-[0_0_15px_rgba(6,182,212,0.4)] border-4 border-[#111827] hover:scale-105 transition-transform"
         >
-          <PlusCircle size={28} />
+          <PlusCircle size={24} />
         </button>
         <button
-          onClick={() => setActiveTab("seguimiento")}
+          onClick={() => setActiveTab("frascos")}
           className={`flex flex-col items-center p-2 transition-colors ${
-            activeTab === "seguimiento"
-              ? "text-cyan-400"
+            activeTab === "frascos"
+              ? "text-amber-400"
               : "text-gray-500 hover:text-gray-400"
           }`}
         >
-          <ListTodo size={24} />
-          <span className="text-[10px] mt-1 font-bold">Deudas</span>
+          <Users size={22} />
+          <span className="text-[9px] mt-1 font-bold">Frascos</span>
         </button>
         <button
-          onClick={() => setActiveTab("ajustes")}
-          className={`flex flex-col items-center p-2 transition-colors ${
-            activeTab === "ajustes"
-              ? "text-cyan-400"
-              : "text-gray-500 hover:text-gray-400"
-          }`}
+          onClick={() => signOut(auth).then(() => setUser(null))}
+          className="flex flex-col items-center p-2 text-gray-500 hover:text-red-400 transition-colors"
         >
-          <Settings size={24} />
-          <span className="text-[10px] mt-1 font-bold">Ajustes</span>
+          <Settings size={22} />
+          <span className="text-[9px] mt-1 font-bold">Salir</span>
         </button>
       </div>
     </div>
