@@ -26,12 +26,16 @@ import {
   Settings,
   BarChart3,
   Users,
-  Target,
   Trash2,
   ArrowUpCircle,
   ArrowDownCircle,
   CheckCircle2,
-  Copy,
+  Target,
+  CalendarDays,
+  History,
+  LogOut,
+  Globe,
+  DollarSign,
 } from "lucide-react";
 
 const firebaseConfig = {
@@ -51,32 +55,40 @@ export default function WealthManager() {
   const [user, setUser] = useState(null);
   const [activeTab, setActiveTab] = useState("resumen");
 
-  // ESTADOS DE DATOS
-  const [records, setRecords] = useState([]); // Personales (Ingresos y Gastos)
-  const [jars, setJars] = useState([]); // Frascos a los que pertenezco
-  const [sharedDebts, setSharedDebts] = useState([]); // Deudas dentro de los frascos
+  // DATOS
+  const [records, setRecords] = useState([]);
+  const [jars, setJars] = useState([]);
+  const [sharedDebts, setSharedDebts] = useState([]);
 
-  // ESTADOS FORMULARIO GENERAL
+  // FORMULARIO (SÚPER MOTOR)
   const [isIncome, setIsIncome] = useState(false);
   const [name, setName] = useState("");
-  const categories = [
+  const defaultCategories = [
     "Sueldo",
     "Ventas",
     "Tarjeta de Crédito",
     "Préstamo",
+    "Alquiler",
     "Hogar",
     "Vehículo",
-    "Viajes",
     "Servicios",
+    "Viajes",
+    "Diversión",
   ];
-  const [category, setCategory] = useState(categories[2]);
+  const [customCategories, setCustomCategories] = useState([]);
+  const [category, setCategory] = useState(defaultCategories[2]);
+  const [newCategoryName, setNewCategoryName] = useState("");
+
   const [amount, setAmount] = useState("");
+  const [paymentType, setPaymentType] = useState("cuotas"); // unico, mensual, cuotas
   const [installments, setInstallments] = useState("1");
+  const [dueDay, setDueDay] = useState("10");
   const [paymentInput, setPaymentInput] = useState({});
 
-  // ESTADOS MULTIJUGADOR (FRASCOS)
+  // MULTIJUGADOR (FRASCOS)
   const [isShared, setIsShared] = useState(false);
   const [selectedJarId, setSelectedJarId] = useState("");
+  const [myPercentage, setMyPercentage] = useState("50");
   const [newJarName, setNewJarName] = useState("");
   const [joinCode, setJoinCode] = useState("");
 
@@ -94,7 +106,6 @@ export default function WealthManager() {
   };
 
   const loadData = async (uid) => {
-    // 1. Cargar Finanzas Personales
     const qPersonal = query(
       collection(db, `users/${uid}/finances`),
       orderBy("createdAt", "desc")
@@ -102,7 +113,6 @@ export default function WealthManager() {
     const snapPersonal = await getDocs(qPersonal);
     setRecords(snapPersonal.docs.map((d) => ({ id: d.id, ...d.data() })));
 
-    // 2. Cargar Frascos del Usuario
     const qJars = query(
       collection(db, `shared_jars`),
       where("members", "array-contains", uid)
@@ -111,7 +121,6 @@ export default function WealthManager() {
     const loadedJars = snapJars.docs.map((d) => ({ id: d.id, ...d.data() }));
     setJars(loadedJars);
 
-    // 3. Cargar Deudas de esos Frascos
     if (loadedJars.length > 0) {
       const jarIds = loadedJars.map((j) => j.id);
       const qShared = query(
@@ -124,7 +133,134 @@ export default function WealthManager() {
   };
 
   // -------------------------------------------------------------
-  // LÓGICA DE FRASCOS COMPARTIDOS (MODO MULTIJUGADOR)
+  // GUARDADO INTELIGENTE (CUOTAS, MENSUAL, ÚNICO, CATEGORÍAS)
+  // -------------------------------------------------------------
+  const handleSaveRecord = async (e) => {
+    e.preventDefault();
+    if (!user) return;
+
+    let finalCategory = category;
+    if (category === "nueva" && newCategoryName.trim() !== "") {
+      finalCategory = newCategoryName;
+      setCustomCategories([...customCategories, newCategoryName]);
+    }
+
+    const finalAmount = parseFloat(amount);
+    let finalInstallments =
+      paymentType === "unico"
+        ? 1
+        : paymentType === "mensual"
+        ? 999
+        : parseInt(installments);
+    const monthlyMin = isIncome
+      ? 0
+      : paymentType === "mensual"
+      ? finalAmount
+      : finalAmount / finalInstallments;
+
+    const recordData = {
+      name,
+      category: isIncome ? "Ingreso" : finalCategory,
+      originalAmount: finalAmount,
+      currentBalance: isIncome
+        ? 0
+        : paymentType === "mensual"
+        ? finalAmount
+        : finalAmount,
+      monthlyMin,
+      installments: finalInstallments,
+      paymentType,
+      dueDay: parseInt(dueDay),
+      createdAt: new Date().toISOString(),
+      status: "active",
+      creatorId: user.uid,
+    };
+
+    if (!isIncome && isShared && selectedJarId) {
+      const jar = jars.find((j) => j.id === selectedJarId);
+      recordData.jarId = selectedJarId;
+      recordData.jarName = jar?.name || "Frasco Compartido";
+      recordData.myPercentage = parseFloat(myPercentage);
+      recordData.history = []; // Historial de pagos forense
+
+      const docRef = await addDoc(collection(db, `shared_debts`), recordData);
+      setSharedDebts([{ id: docRef.id, ...recordData }, ...sharedDebts]);
+    } else {
+      recordData.type = isIncome ? "income" : "debt";
+      const docRef = await addDoc(
+        collection(db, `users/${user.uid}/finances`),
+        recordData
+      );
+      setRecords([{ id: docRef.id, ...recordData }, ...records]);
+    }
+
+    setName("");
+    setAmount("");
+    setInstallments("1");
+    setIsShared(false);
+    setNewCategoryName("");
+    setActiveTab(isShared ? "frascos" : "resumen");
+  };
+
+  // -------------------------------------------------------------
+  // MOTOR DE PAGOS CON HISTORIAL (FORENSE)
+  // -------------------------------------------------------------
+  const handlePay = async (record, isSharedDebt = false) => {
+    const payAmt = parseFloat(paymentInput[record.id]);
+    if (!payAmt || payAmt <= 0) return;
+
+    // Si es mensual no baja el "saldo total" a 0 fácilmente, asume el pago del mes.
+    const newBalance =
+      record.paymentType === "mensual"
+        ? record.currentBalance
+        : Math.max(0, record.currentBalance - payAmt);
+    const newStatus =
+      newBalance === 0 && record.paymentType !== "mensual" ? "paid" : "active";
+
+    const paymentLog = {
+      userId: user.uid,
+      userName: user.displayName || "Usuario",
+      amount: payAmt,
+      date: new Date().toISOString(),
+    };
+
+    if (isSharedDebt) {
+      await updateDoc(doc(db, `shared_debts`, record.id), {
+        currentBalance: newBalance,
+        status: newStatus,
+        history: arrayUnion(paymentLog),
+      });
+      setSharedDebts(
+        sharedDebts.map((r) =>
+          r.id === record.id
+            ? {
+                ...r,
+                currentBalance: newBalance,
+                status: newStatus,
+                history: [...(r.history || []), paymentLog],
+              }
+            : r
+        )
+      );
+    } else {
+      await updateDoc(doc(db, `users/${user.uid}/finances`, record.id), {
+        currentBalance: newBalance,
+        status: newStatus,
+      });
+      setRecords(
+        records.map((r) =>
+          r.id === record.id
+            ? { ...r, currentBalance: newBalance, status: newStatus }
+            : r
+        )
+      );
+    }
+    setPaymentInput({ ...paymentInput, [record.id]: "" });
+    alert("Pago registrado correctamente.");
+  };
+
+  // -------------------------------------------------------------
+  // MULTIJUGADOR: FRASCOS
   // -------------------------------------------------------------
   const handleCreateJar = async (e) => {
     e.preventDefault();
@@ -139,7 +275,6 @@ export default function WealthManager() {
     const docRef = await addDoc(collection(db, `shared_jars`), newJar);
     setJars([{ id: docRef.id, ...newJar }, ...jars]);
     setNewJarName("");
-    alert(`¡Frasco creado! Código de invitación: ${code}`);
   };
 
   const handleJoinJar = async (e) => {
@@ -162,181 +297,158 @@ export default function WealthManager() {
         ...jars,
       ]);
       setJoinCode("");
-      alert("¡Te uniste al frasco exitosamente!");
-    } else {
-      alert("Código inválido o frasco inexistente.");
     }
   };
 
   // -------------------------------------------------------------
-  // LÓGICA DE AÑADIR DEUDA / INGRESO
+  // MATEMÁTICA Y GENERADOR DE LÍNEA DE TIEMPO (TIMELINE)
   // -------------------------------------------------------------
-  const handleSaveRecord = async (e) => {
-    e.preventDefault();
-    if (!user) return;
+  const generateTimeline = () => {
+    const timeline = [];
+    const today = new Date();
 
-    const finalAmount = parseFloat(amount);
-    const monthlyMin = isIncome ? 0 : finalAmount / parseInt(installments);
+    const addProjections = (debt, isShared) => {
+      const myRatio = isShared ? debt.myPercentage / 100 : 1;
+      const myBalance = debt.currentBalance * myRatio;
+      if (myBalance <= 0 && debt.paymentType !== "mensual") return;
 
-    const recordData = {
-      name,
-      category: isIncome ? "Ingreso" : category,
-      originalAmount: finalAmount,
-      currentBalance: isIncome ? 0 : finalAmount,
-      monthlyMin,
-      installments: parseInt(installments),
-      createdAt: new Date().toISOString(),
-      status: "active",
-      creatorId: user.uid,
-    };
+      const startDate = new Date(debt.createdAt);
+      const startMonthOffset =
+        (today.getFullYear() - startDate.getFullYear()) * 12 +
+        (today.getMonth() - startDate.getMonth());
+      let currentInst = Math.max(1, startMonthOffset + 1);
 
-    if (!isIncome && isShared && selectedJarId) {
-      // Guardar como deuda compartida
-      recordData.jarId = selectedJarId;
-      const docRef = await addDoc(collection(db, `shared_debts`), recordData);
-      setSharedDebts([{ id: docRef.id, ...recordData }, ...sharedDebts]);
-    } else {
-      // Guardar como personal (Ingreso o Deuda)
-      recordData.type = isIncome ? "income" : "debt";
-      const docRef = await addDoc(
-        collection(db, `users/${user.uid}/finances`),
-        recordData
-      );
-      setRecords([{ id: docRef.id, ...recordData }, ...records]);
-    }
-
-    setName("");
-    setAmount("");
-    setInstallments("1");
-    setIsShared(false);
-    setActiveTab(isShared ? "frascos" : "resumen");
-  };
-
-  // -------------------------------------------------------------
-  // MOTOR DE PAGOS
-  // -------------------------------------------------------------
-  const handlePay = async (record, isSharedDebt = false) => {
-    const payAmt = parseFloat(paymentInput[record.id]);
-    if (!payAmt || payAmt <= 0) return;
-
-    const newBalance = Math.max(0, record.currentBalance - payAmt);
-    const updateData = {
-      currentBalance: newBalance,
-      status: newBalance === 0 ? "paid" : "active",
-    };
-
-    if (isSharedDebt) {
-      await updateDoc(doc(db, `shared_debts`, record.id), updateData);
-      setSharedDebts(
-        sharedDebts.map((r) =>
-          r.id === record.id ? { ...r, ...updateData } : r
+      // Proyectar los próximos 4 pagos
+      for (let i = 0; i < 4; i++) {
+        if (debt.paymentType === "unico" && i > 0) break;
+        if (
+          debt.paymentType === "cuotas" &&
+          currentInst + i > debt.installments
         )
-      );
-    } else {
-      await updateDoc(
-        doc(db, `users/${user.uid}/finances`, record.id),
-        updateData
-      );
-      setRecords(
-        records.map((r) => (r.id === record.id ? { ...r, ...updateData } : r))
-      );
-    }
-    setPaymentInput({ ...paymentInput, [record.id]: "" });
+          break;
+
+        const projDate = new Date(
+          today.getFullYear(),
+          today.getMonth() + i,
+          debt.dueDay
+        );
+        let label = "";
+        if (debt.paymentType === "unico") label = "PAGO ÚNICO";
+        else if (debt.paymentType === "mensual") label = "MENSUAL";
+        else label = `CUOTA ${currentInst + i}/${debt.installments}`;
+
+        timeline.push({
+          id: `${debt.id}-${i}`,
+          originalId: debt.id,
+          name: debt.name,
+          category: debt.category,
+          amount: isShared ? debt.monthlyMin * myRatio : debt.monthlyMin,
+          dateObj: projDate,
+          dateStr: projDate.toLocaleDateString("es-AR", {
+            day: "2-digit",
+            month: "2-digit",
+            year: "numeric",
+          }),
+          label,
+          isShared,
+          rawDebt: debt,
+        });
+      }
+    };
+
+    records
+      .filter((r) => r.type === "debt" && r.status === "active")
+      .forEach((d) => addProjections(d, false));
+    sharedDebts
+      .filter((d) => d.status === "active")
+      .forEach((d) => addProjections(d, true));
+
+    return timeline.sort((a, b) => a.dateObj - b.dateObj); // Ordenado por fecha de vencimiento
   };
 
-  const handleDelete = async (id, isSharedDebt = false) => {
-    if (!window.confirm("¿Eliminar este registro?")) return;
-    if (isSharedDebt) {
-      await deleteDoc(doc(db, `shared_debts`, id));
-      setSharedDebts(sharedDebts.filter((r) => r.id !== id));
-    } else {
-      await deleteDoc(doc(db, `users/${user.uid}/finances`, id));
-      setRecords(records.filter((r) => r.id !== id));
-    }
-  };
+  const upcomingPayments = generateTimeline();
 
-  // -------------------------------------------------------------
-  // MATEMÁTICA Y GRÁFICOS DEL ECOSISTEMA
-  // -------------------------------------------------------------
   const incomes = records
     .filter((r) => r.type === "income")
     .reduce((acc, r) => acc + r.originalAmount, 0);
-  const activeDebts = records.filter(
-    (r) => r.type === "debt" && r.status === "active"
-  );
+  const totalPersonalDebt = records
+    .filter((r) => r.type === "debt" && r.status === "active")
+    .reduce((acc, r) => acc + r.currentBalance, 0);
+  const mySharedDebt = sharedDebts
+    .filter((r) => r.status === "active")
+    .reduce((acc, r) => acc + r.currentBalance * (r.myPercentage / 100), 0);
+  const netBalance = incomes - totalPersonalDebt - mySharedDebt;
 
-  const totalDebtBalance = activeDebts.reduce(
-    (acc, r) => acc + r.currentBalance,
-    0
-  );
-  const totalOriginalDebt = records
-    .filter((r) => r.type === "debt")
-    .reduce((acc, r) => acc + r.originalAmount, 0);
+  // GRÁFICOS DINÁMICOS
+  const projChart = [0, 1, 2, 3].map((monthOffset) => {
+    const totalMes = upcomingPayments
+      .filter(
+        (p) =>
+          p.dateObj.getMonth() === (new Date().getMonth() + monthOffset) % 12
+      )
+      .reduce((acc, p) => acc + p.amount, 0);
+    const mesStr = new Date(
+      new Date().getFullYear(),
+      new Date().getMonth() + monthOffset,
+      1
+    ).toLocaleDateString("es-ES", { month: "short" });
+    return { label: mesStr, amt: totalMes };
+  });
+  const maxProj = Math.max(...projChart.map((p) => p.amt), 1);
 
-  const netBalance = incomes - (totalOriginalDebt - totalDebtBalance);
-  const porcentajePagado =
-    totalOriginalDebt > 0
-      ? ((totalOriginalDebt - totalDebtBalance) / totalOriginalDebt) * 100
-      : 0;
-
-  const projectionData = [
-    {
-      label: "Mes 1",
-      amt: activeDebts.reduce((acc, d) => acc + d.monthlyMin, 0),
-    },
-    {
-      label: "Mes 2",
-      amt: activeDebts.reduce(
-        (acc, d) => acc + (d.installments >= 2 ? d.monthlyMin : 0),
-        0
-      ),
-    },
-    {
-      label: "Mes 3",
-      amt: activeDebts.reduce(
-        (acc, d) => acc + (d.installments >= 3 ? d.monthlyMin : 0),
-        0
-      ),
-    },
-    {
-      label: "Mes 4",
-      amt: activeDebts.reduce(
-        (acc, d) => acc + (d.installments >= 4 ? d.monthlyMin : 0),
-        0
-      ),
-    },
-  ];
-  const maxProj = Math.max(...projectionData.map((p) => p.amt), 1);
+  const allCategories = [...defaultCategories, ...customCategories];
 
   if (!user)
     return (
-      <div className="min-h-screen bg-[#0F172A] flex justify-center items-center p-6">
+      <div className="min-h-screen bg-[#0F172A] flex flex-col justify-center items-center p-6">
+        <div className="w-20 h-20 bg-cyan-500 rounded-3xl flex items-center justify-center mb-6 shadow-[0_0_30px_rgba(6,182,212,0.5)]">
+          <Wallet size={40} className="text-[#0F172A]" />
+        </div>
+        <h1 className="text-3xl font-black text-white mb-2 tracking-tight">
+          Wealth Manager
+        </h1>
+        <p className="text-gray-400 text-center mb-10 text-sm">
+          Proyecciones, cuotas y frascos compartidos en un solo lugar.
+        </p>
         <button
           onClick={loginWithGoogle}
-          className="bg-white text-black p-4 rounded-xl font-bold w-full"
+          className="w-full bg-white text-black p-4 rounded-xl font-bold flex justify-center items-center gap-3 hover:bg-gray-200 transition-colors"
         >
-          Ingresar con Google
+          Continuar con Google
         </button>
       </div>
     );
 
   return (
     <div className="min-h-screen bg-[#111827] text-slate-100 pb-24 font-sans">
+      {/* HEADER */}
       <div className="bg-[#1F2937] p-5 sticky top-0 z-10 border-b border-gray-800 shadow-md flex justify-between items-center">
-        <h2 className="text-xl font-bold text-white capitalize">{activeTab}</h2>
-        <div className="w-8 h-8 bg-cyan-900 rounded-full flex items-center justify-center text-cyan-400 font-bold border border-cyan-700">
-          {user.displayName?.charAt(0)}
+        <div>
+          <h2 className="text-2xl font-bold text-white capitalize tracking-tight">
+            {activeTab}
+          </h2>
+          {activeTab === "resumen" && (
+            <p className="text-xs text-cyan-400 font-bold tracking-widest uppercase mt-1">
+              Línea de tiempo
+            </p>
+          )}
         </div>
+        <img
+          src={user.photoURL}
+          alt="Perfil"
+          className="w-10 h-10 rounded-full border-2 border-cyan-500 shadow-[0_0_10px_rgba(6,182,212,0.4)] cursor-pointer"
+          onClick={() => setActiveTab("perfil")}
+        />
       </div>
 
       <div className="p-4 space-y-4">
-        {/* ================= RESUMEN GLOBAL ================= */}
+        {/* ================= RESUMEN Y LÍNEA DE TIEMPO (TIMELINE) ================= */}
         {activeTab === "resumen" && (
           <div className="space-y-4 animate-fade-in">
             <div className="grid grid-cols-2 gap-4">
               <div className="bg-[#1F2937] rounded-2xl p-4 border border-gray-800 shadow-lg">
-                <h3 className="text-gray-400 text-xs mb-1 uppercase tracking-wide">
-                  Saldo Líquido
+                <h3 className="text-gray-400 text-[10px] mb-1 uppercase tracking-wider font-bold">
+                  Saldo Líquido Actual
                 </h3>
                 <p
                   className={`text-2xl font-black ${
@@ -345,122 +457,127 @@ export default function WealthManager() {
                 >
                   ${netBalance.toLocaleString("es-AR")}
                 </p>
-                <span className="text-[10px] text-gray-500">
-                  Ingresos - Pagos
-                </span>
               </div>
               <div className="bg-[#1F2937] rounded-2xl p-4 border border-gray-800 shadow-lg">
-                <h3 className="text-gray-400 text-xs mb-1 uppercase tracking-wide">
-                  Deuda Personal
+                <h3 className="text-gray-400 text-[10px] mb-1 uppercase tracking-wider font-bold">
+                  Deuda Total Proyectada
                 </h3>
                 <p className="text-2xl font-black text-rose-400">
-                  ${totalDebtBalance.toLocaleString("es-AR")}
+                  ${(totalPersonalDebt + mySharedDebt).toLocaleString("es-AR")}
                 </p>
-                <span className="text-[10px] text-gray-500">
-                  Saldo Restante
-                </span>
               </div>
             </div>
 
-            <div className="bg-[#1F2937] p-5 rounded-2xl border border-gray-800 flex justify-between items-center shadow-lg">
-              <div>
-                <p className="text-xs text-gray-400">
-                  Progreso Total (Personal)
-                </p>
-                <p className="text-2xl font-black text-cyan-400">
-                  {Math.round(porcentajePagado)}% Pagado
-                </p>
-              </div>
-              <div className="relative w-20 h-20">
-                <svg className="w-full h-full transform -rotate-90">
-                  <circle
-                    cx="40"
-                    cy="40"
-                    r="34"
-                    stroke="currentColor"
-                    strokeWidth="8"
-                    fill="transparent"
-                    className="text-gray-700"
-                  />
-                  <circle
-                    cx="40"
-                    cy="40"
-                    r="34"
-                    stroke="currentColor"
-                    strokeWidth="8"
-                    fill="transparent"
-                    strokeDasharray={213}
-                    strokeDashoffset={213 - (porcentajePagado / 100) * 213}
-                    className="text-cyan-500 transition-all duration-1000"
-                    strokeLinecap="round"
-                  />
-                </svg>
-              </div>
+            <div className="flex items-center gap-2 mt-6 mb-2">
+              <CalendarDays className="text-cyan-400" size={18} />
+              <h3 className="font-bold text-white text-lg">
+                Próximos Vencimientos
+              </h3>
             </div>
 
-            <h3 className="font-bold text-gray-300 mt-6">Tus Deudas Activas</h3>
-            {activeDebts.length === 0 && (
-              <p className="text-sm text-emerald-500 text-center py-4">
-                ¡No tenés deudas personales activas!
+            {/* LA LISTA CRONOLÓGICA INTELIGENTE */}
+            {upcomingPayments.length === 0 ? (
+              <p className="text-center text-emerald-500 text-sm py-8 bg-[#1F2937] rounded-xl border border-gray-800">
+                No hay pagos proyectados. ¡Estás al día!
               </p>
-            )}
-            {activeDebts.map((d) => (
-              <div
-                key={d.id}
-                className="bg-[#1F2937] p-4 rounded-xl border border-gray-800 flex flex-col gap-3 shadow-md"
-              >
-                <div className="flex justify-between">
-                  <div>
-                    <p className="font-bold">{d.name}</p>
-                    <p className="text-xs text-gray-400">
-                      {d.category} • Cuota de {d.installments}
-                    </p>
+            ) : (
+              <div className="space-y-3">
+                {upcomingPayments.map((p, idx) => (
+                  <div
+                    key={p.id}
+                    className={`p-4 rounded-xl border flex flex-col gap-3 shadow-md relative overflow-hidden ${
+                      p.isShared
+                        ? "bg-amber-900/10 border-amber-500/30"
+                        : "bg-[#1F2937] border-gray-800"
+                    }`}
+                  >
+                    {p.isShared && (
+                      <div className="absolute top-0 left-0 w-1 h-full bg-amber-500"></div>
+                    )}
+
+                    <div className="flex justify-between items-start">
+                      <div>
+                        <h4 className="font-bold text-white text-[15px]">
+                          {p.name}
+                        </h4>
+                        <div className="flex items-center gap-2 mt-1">
+                          <span
+                            className={`text-[9px] px-1.5 py-0.5 rounded font-bold uppercase tracking-wider ${
+                              p.isShared
+                                ? "bg-amber-500/20 text-amber-400"
+                                : "bg-cyan-500/20 text-cyan-400"
+                            }`}
+                          >
+                            {p.label}
+                          </span>
+                          <span className="text-[10px] text-gray-400 flex items-center gap-1">
+                            <CalendarDays size={10} /> Vence: {p.dateStr}
+                          </span>
+                        </div>
+                      </div>
+                      <div className="text-right">
+                        <p
+                          className={`font-black text-lg ${
+                            p.isShared ? "text-amber-400" : "text-rose-400"
+                          }`}
+                        >
+                          ${p.amount.toLocaleString("es-AR")}
+                        </p>
+                        {p.isShared && (
+                          <p className="text-[9px] text-amber-500/70">
+                            Tu {p.rawDebt.myPercentage}% de {p.rawDebt.jarName}
+                          </p>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* MOSTRAR BOTÓN DE PAGO SOLO EN EL MES ACTUAL (Para no pagar cuotas futuras por error acá) */}
+                    {idx === 0 ||
+                    p.dateObj.getMonth() === new Date().getMonth() ? (
+                      <div className="flex gap-2 mt-1 pt-3 border-t border-gray-700/50">
+                        <input
+                          type="number"
+                          placeholder="Monto a pagar..."
+                          onChange={(e) =>
+                            setPaymentInput({
+                              ...paymentInput,
+                              [p.originalId]: e.target.value,
+                            })
+                          }
+                          className={`w-full bg-[#111827] border rounded-lg px-3 text-xs text-white focus:outline-none ${
+                            p.isShared
+                              ? "border-amber-900/50 focus:ring-1 focus:ring-amber-500"
+                              : "border-gray-700 focus:ring-1 focus:ring-cyan-500"
+                          }`}
+                        />
+                        <button
+                          onClick={() => handlePay(p.rawDebt, p.isShared)}
+                          className={`px-4 py-1.5 rounded-lg text-xs font-bold text-white shadow transition-all ${
+                            p.isShared
+                              ? "bg-amber-600 hover:bg-amber-500"
+                              : "bg-cyan-600 hover:bg-cyan-500"
+                          }`}
+                        >
+                          Abonar
+                        </button>
+                      </div>
+                    ) : null}
                   </div>
-                  <p className="font-bold text-rose-400">
-                    ${d.currentBalance.toLocaleString("es-AR")}
-                  </p>
-                </div>
-                <div className="flex gap-2 mt-2">
-                  <input
-                    type="number"
-                    placeholder={`Mín: $${d.monthlyMin.toLocaleString(
-                      "es-AR"
-                    )}`}
-                    onChange={(e) =>
-                      setPaymentInput({
-                        ...paymentInput,
-                        [d.id]: e.target.value,
-                      })
-                    }
-                    className="w-full bg-[#111827] border border-gray-700 rounded-lg px-3 text-sm text-white focus:ring-1 focus:ring-cyan-500 outline-none"
-                  />
-                  <button
-                    onClick={() => handlePay(d, false)}
-                    className="bg-cyan-600 px-4 py-2 rounded-lg text-xs font-bold shadow hover:bg-cyan-500"
-                  >
-                    Abonar
-                  </button>
-                  <button
-                    onClick={() => handleDelete(d.id, false)}
-                    className="bg-red-500/10 text-red-500 px-3 rounded-lg hover:bg-red-500/20"
-                  >
-                    <Trash2 size={16} />
-                  </button>
-                </div>
+                ))}
               </div>
-            ))}
+            )}
           </div>
         )}
 
-        {/* ================= GRÁFICOS Y ANÁLISIS ================= */}
+        {/* ================= GRÁFICOS Y ANÁLISIS MENSUAL ================= */}
         {activeTab === "gráficos" && (
           <div className="space-y-6 animate-fade-in">
             <div className="bg-[#1F2937] p-5 rounded-2xl border border-gray-800 shadow-lg">
-              <h3 className="text-sm font-bold text-gray-400 uppercase tracking-wider mb-4">
-                Proyección Mensual (Cuotas)
+              <h3 className="text-sm font-bold text-gray-400 uppercase tracking-wider mb-4 flex items-center gap-2">
+                <BarChart3 size={16} /> Proyección Mensual Requerida
               </h3>
-              <div className="flex justify-around items-end h-40 border-b border-gray-700 pb-2">
-                {projectionData.map((p, i) => (
+              <div className="flex justify-around items-end h-48 border-b border-gray-700 pb-2">
+                {projChart.map((p, i) => (
                   <div
                     key={i}
                     className="flex flex-col items-center w-1/5 group"
@@ -472,48 +589,21 @@ export default function WealthManager() {
                       style={{
                         height: `${Math.max((p.amt / maxProj) * 100, 5)}%`,
                       }}
-                      className="w-full bg-cyan-600 rounded-t-sm hover:bg-cyan-400 transition-colors"
+                      className="w-full bg-gradient-to-t from-cyan-900 to-cyan-500 rounded-t-sm hover:from-cyan-700 hover:to-cyan-400 transition-colors shadow-[0_0_10px_rgba(6,182,212,0.2)]"
                     ></div>
-                    <span className="text-[10px] text-gray-400 mt-2 font-bold">
+                    <span className="text-[10px] text-gray-400 mt-2 font-bold uppercase">
                       {p.label}
                     </span>
                   </div>
                 ))}
               </div>
             </div>
-
-            <div className="bg-[#1F2937] p-5 rounded-2xl border border-gray-800 shadow-lg space-y-5">
-              <h3 className="text-sm font-bold text-gray-400 uppercase tracking-wider">
-                Balance Histórico
-              </h3>
-              <div className="flex items-center gap-4">
-                <ArrowUpCircle className="text-emerald-500" size={32} />
-                <div>
-                  <p className="text-xs text-gray-400">
-                    Total Ingresos Registrados
-                  </p>
-                  <p className="font-bold text-emerald-400">
-                    ${incomes.toLocaleString("es-AR")}
-                  </p>
-                </div>
-              </div>
-              <div className="flex items-center gap-4">
-                <ArrowDownCircle className="text-rose-500" size={32} />
-                <div>
-                  <p className="text-xs text-gray-400">Total Deuda Adquirida</p>
-                  <p className="font-bold text-rose-400">
-                    ${totalOriginalDebt.toLocaleString("es-AR")}
-                  </p>
-                </div>
-              </div>
-            </div>
           </div>
         )}
 
-        {/* ================= FRASCOS COMPARTIDOS (NUEVO MOTOR) ================= */}
+        {/* ================= FRASCOS COMPARTIDOS Y SU HISTORIAL ================= */}
         {activeTab === "frascos" && (
           <div className="space-y-5 animate-fade-in">
-            {/* PANEL DE CONEXIÓN */}
             <div className="grid grid-cols-2 gap-4">
               <form
                 onSubmit={handleCreateJar}
@@ -524,79 +614,70 @@ export default function WealthManager() {
                 </h3>
                 <input
                   type="text"
-                  placeholder="Ej: Viaje Bariloche"
+                  placeholder="Nombre..."
                   value={newJarName}
                   onChange={(e) => setNewJarName(e.target.value)}
                   className="w-full bg-black/20 border border-amber-400/30 rounded-lg p-2 text-white text-xs mb-2 outline-none"
                 />
                 <button
                   type="submit"
-                  className="w-full bg-amber-500 text-amber-950 font-bold text-xs py-2 rounded-lg shadow"
+                  className="w-full bg-amber-500 text-amber-950 font-bold text-xs py-2 rounded-lg shadow hover:bg-amber-400 transition-colors"
                 >
-                  Generar Código
+                  Generar
                 </button>
               </form>
-
               <form
                 onSubmit={handleJoinJar}
                 className="bg-[#1F2937] p-4 rounded-2xl shadow-lg border border-gray-700"
               >
-                <h3 className="font-bold text-cyan-400 text-sm mb-2">
-                  Unirse a Frasco
-                </h3>
+                <h3 className="font-bold text-cyan-400 text-sm mb-2">Unirse</h3>
                 <input
                   type="text"
-                  placeholder="Código de 6 letras"
+                  placeholder="Código..."
                   value={joinCode}
                   onChange={(e) => setJoinCode(e.target.value)}
-                  className="w-full bg-[#111827] border border-gray-600 rounded-lg p-2 text-white text-xs mb-2 outline-none font-mono uppercase"
+                  className="w-full bg-[#111827] border border-gray-600 rounded-lg p-2 text-white text-xs mb-2 outline-none uppercase font-mono"
                 />
                 <button
                   type="submit"
-                  className="w-full bg-cyan-600 text-white font-bold text-xs py-2 rounded-lg shadow"
+                  className="w-full bg-cyan-600 text-white font-bold text-xs py-2 rounded-lg shadow hover:bg-cyan-500 transition-colors"
                 >
                   Conectar
                 </button>
               </form>
             </div>
 
-            {/* LISTA DE FRASCOS Y SUS DEUDAS */}
             {jars.length === 0 ? (
               <p className="text-center text-gray-500 py-10">
-                No estás conectado a ningún frasco compartido.
+                No estás en ningún frasco compartido.
               </p>
             ) : (
               jars.map((jar) => {
                 const jarDebts = sharedDebts.filter((d) => d.jarId === jar.id);
-                const jarTotal = jarDebts.reduce(
-                  (acc, d) => acc + d.currentBalance,
-                  0
-                );
-
                 return (
                   <div
                     key={jar.id}
                     className="bg-[#1F2937] p-5 rounded-2xl border border-amber-500/30 shadow-xl relative overflow-hidden"
                   >
-                    <div className="absolute top-0 left-0 w-1 h-full bg-amber-500"></div>
                     <div className="flex justify-between items-start mb-4">
                       <div>
-                        <h4 className="font-bold text-white text-lg">
+                        <h4 className="font-black text-white text-xl">
                           {jar.name}
                         </h4>
-                        <p className="text-xs text-gray-400 mt-0.5">
-                          ID:{" "}
-                          <span className="font-mono bg-black/30 px-1 rounded text-amber-400">
+                        <p className="text-xs text-gray-400 mt-1 flex items-center gap-1">
+                          Código:{" "}
+                          <span className="font-mono bg-black/30 px-1.5 py-0.5 rounded text-amber-400">
                             {jar.code}
                           </span>
                         </p>
                       </div>
-                      <div className="text-right">
-                        <p className="text-[10px] text-gray-500 uppercase">
-                          Deuda del Frasco
-                        </p>
-                        <p className="font-black text-amber-400">
-                          ${jarTotal.toLocaleString("es-AR")}
+                      <div className="bg-amber-500/10 p-2 rounded-xl border border-amber-500/20 text-center">
+                        <Users
+                          size={16}
+                          className="text-amber-500 mx-auto mb-1"
+                        />
+                        <p className="text-[9px] text-amber-400 font-bold">
+                          {jar.members.length} Miembros
                         </p>
                       </div>
                     </div>
@@ -604,15 +685,11 @@ export default function WealthManager() {
                     {jarDebts.map((d) => (
                       <div
                         key={d.id}
-                        className={`p-3 rounded-xl mt-2 flex flex-col gap-2 ${
-                          d.status === "paid"
-                            ? "bg-emerald-900/20 border border-emerald-500/20"
-                            : "bg-[#111827] border border-gray-700"
-                        }`}
+                        className="p-4 rounded-xl mt-3 bg-[#111827] border border-gray-700"
                       >
-                        <div className="flex justify-between items-center">
+                        <div className="flex justify-between items-center border-b border-gray-800 pb-2 mb-2">
                           <span
-                            className={`text-sm font-bold ${
+                            className={`text-[15px] font-bold ${
                               d.status === "paid"
                                 ? "text-emerald-500 line-through"
                                 : "text-white"
@@ -620,41 +697,44 @@ export default function WealthManager() {
                           >
                             {d.name}
                           </span>
-                          <span
-                            className={`text-sm font-mono ${
-                              d.status === "paid"
-                                ? "text-emerald-500"
-                                : "text-rose-400"
-                            }`}
-                          >
-                            ${d.currentBalance.toLocaleString("es-AR")}
-                          </span>
+                          <div className="text-right">
+                            <span
+                              className={`block text-lg font-black ${
+                                d.status === "paid"
+                                  ? "text-emerald-500"
+                                  : "text-amber-400"
+                              }`}
+                            >
+                              ${d.currentBalance.toLocaleString("es-AR")}
+                            </span>
+                            <span className="text-[9px] text-gray-500">
+                              Deuda Total Restante
+                            </span>
+                          </div>
                         </div>
-                        {d.status === "active" && (
-                          <div className="flex gap-2">
-                            <input
-                              type="number"
-                              placeholder="Pago conjunto..."
-                              onChange={(e) =>
-                                setPaymentInput({
-                                  ...paymentInput,
-                                  [d.id]: e.target.value,
-                                })
-                              }
-                              className="w-full bg-[#1F2937] border border-gray-600 rounded-lg px-2 text-xs text-white"
-                            />
-                            <button
-                              onClick={() => handlePay(d, true)}
-                              className="bg-amber-600 px-3 py-1.5 rounded-lg text-xs font-bold text-white"
-                            >
-                              Abonar
-                            </button>
-                            <button
-                              onClick={() => handleDelete(d.id, true)}
-                              className="bg-red-500/10 text-red-500 px-2 rounded-lg"
-                            >
-                              <Trash2 size={14} />
-                            </button>
+
+                        {/* HISTORIAL FORENSE DE PAGOS */}
+                        {d.history && d.history.length > 0 && (
+                          <div className="bg-black/20 rounded-lg p-2 mt-2 max-h-24 overflow-y-auto">
+                            <p className="text-[10px] text-gray-400 uppercase font-bold flex items-center gap-1 mb-1.5">
+                              <History size={10} /> Últimos pagos:
+                            </p>
+                            {d.history
+                              .slice()
+                              .reverse()
+                              .map((h, i) => (
+                                <div
+                                  key={i}
+                                  className="flex justify-between items-center text-xs py-1 border-b border-gray-800/50 last:border-0"
+                                >
+                                  <span className="text-gray-300 font-medium">
+                                    {h.userName.split(" ")[0]} abonó:
+                                  </span>
+                                  <span className="text-emerald-400 font-mono">
+                                    +${h.amount.toLocaleString("es-AR")}
+                                  </span>
+                                </div>
+                              ))}
                           </div>
                         )}
                       </div>
@@ -666,20 +746,20 @@ export default function WealthManager() {
           </div>
         )}
 
-        {/* ================= AGREGAR (FORMULARIO INTELIGENTE) ================= */}
+        {/* ================= AGREGAR (CON CATEGORÍAS Y TIPOS DE PAGO) ================= */}
         {activeTab === "agregar" && (
           <form
             onSubmit={handleSaveRecord}
             className="space-y-5 animate-fade-in"
           >
-            <div className="flex bg-[#1F2937] p-1 rounded-xl border border-gray-800">
+            <div className="flex bg-[#1F2937] p-1 rounded-xl border border-gray-800 shadow-md">
               <button
                 type="button"
                 onClick={() => setIsIncome(false)}
-                className={`flex-1 py-2 rounded-lg text-sm font-bold transition-colors ${
+                className={`flex-1 py-2 rounded-lg text-sm font-bold transition-all ${
                   !isIncome
-                    ? "bg-rose-500 text-white shadow-md"
-                    : "text-gray-500"
+                    ? "bg-rose-500 text-white shadow-lg"
+                    : "text-gray-500 hover:text-gray-300"
                 }`}
               >
                 Deuda / Gasto
@@ -687,10 +767,10 @@ export default function WealthManager() {
               <button
                 type="button"
                 onClick={() => setIsIncome(true)}
-                className={`flex-1 py-2 rounded-lg text-sm font-bold transition-colors ${
+                className={`flex-1 py-2 rounded-lg text-sm font-bold transition-all ${
                   isIncome
-                    ? "bg-emerald-500 text-white shadow-md"
-                    : "text-gray-500"
+                    ? "bg-emerald-500 text-white shadow-lg"
+                    : "text-gray-500 hover:text-gray-300"
                 }`}
               >
                 Ingreso
@@ -705,7 +785,6 @@ export default function WealthManager() {
                 <input
                   type="text"
                   required
-                  placeholder="Ej: Sueldo, Tarjeta, Compra..."
                   value={name}
                   onChange={(e) => setName(e.target.value)}
                   className="w-full bg-[#374151] border border-gray-600 rounded-xl p-3.5 text-white outline-none focus:ring-1 focus:ring-cyan-500"
@@ -735,68 +814,144 @@ export default function WealthManager() {
                   <div className="grid grid-cols-2 gap-4">
                     <div>
                       <label className="text-xs font-bold text-gray-400 uppercase mb-1 block">
-                        Categoría
+                        Tipo de Pago
                       </label>
                       <select
-                        value={category}
-                        onChange={(e) => setCategory(e.target.value)}
+                        value={paymentType}
+                        onChange={(e) => setPaymentType(e.target.value)}
                         className="w-full bg-[#374151] border border-gray-600 rounded-xl p-3.5 text-white text-sm outline-none"
                       >
-                        {categories
-                          .filter((c) => c !== "Sueldo" && c !== "Ventas")
-                          .map((c) => (
-                            <option key={c}>{c}</option>
-                          ))}
+                        <option value="unico">Pago Único</option>
+                        <option value="mensual">Suscripción Mensual</option>
+                        <option value="cuotas">A Cuotas</option>
                       </select>
                     </div>
+                    {paymentType === "cuotas" ? (
+                      <div>
+                        <label className="text-xs font-bold text-gray-400 uppercase mb-1 block">
+                          Cant. Cuotas
+                        </label>
+                        <input
+                          type="number"
+                          min="1"
+                          value={installments}
+                          onChange={(e) => setInstallments(e.target.value)}
+                          className="w-full bg-[#374151] border border-gray-600 rounded-xl p-3.5 text-white text-center outline-none"
+                        />
+                      </div>
+                    ) : (
+                      <div>
+                        <label className="text-xs font-bold text-gray-400 uppercase mb-1 block">
+                          Día Vencimiento
+                        </label>
+                        <input
+                          type="number"
+                          min="1"
+                          max="31"
+                          value={dueDay}
+                          onChange={(e) => setDueDay(e.target.value)}
+                          className="w-full bg-[#374151] border border-gray-600 rounded-xl p-3.5 text-white text-center outline-none"
+                        />
+                      </div>
+                    )}
+                  </div>
+
+                  {paymentType === "cuotas" && (
                     <div>
                       <label className="text-xs font-bold text-gray-400 uppercase mb-1 block">
-                        Cuotas
+                        Día Vencimiento Mensual
                       </label>
                       <input
                         type="number"
                         min="1"
-                        value={installments}
-                        onChange={(e) => setInstallments(e.target.value)}
+                        max="31"
+                        value={dueDay}
+                        onChange={(e) => setDueDay(e.target.value)}
                         className="w-full bg-[#374151] border border-gray-600 rounded-xl p-3.5 text-white text-center outline-none"
                       />
                     </div>
+                  )}
+
+                  <div>
+                    <label className="text-xs font-bold text-gray-400 uppercase mb-1 block">
+                      Categoría
+                    </label>
+                    <select
+                      value={category}
+                      onChange={(e) => setCategory(e.target.value)}
+                      className="w-full bg-[#374151] border border-gray-600 rounded-xl p-3.5 text-white text-sm outline-none"
+                    >
+                      {allCategories.map((c) => (
+                        <option key={c} value={c}>
+                          {c}
+                        </option>
+                      ))}
+                      <option value="nueva" className="font-bold text-cyan-400">
+                        + Añadir Nueva Categoría...
+                      </option>
+                    </select>
+                    {category === "nueva" && (
+                      <input
+                        type="text"
+                        placeholder="Nombre de categoría..."
+                        value={newCategoryName}
+                        onChange={(e) => setNewCategoryName(e.target.value)}
+                        className="w-full bg-[#111827] border border-cyan-700 rounded-xl p-3 mt-2 text-white text-sm outline-none"
+                        autoFocus
+                      />
+                    )}
                   </div>
 
                   <div className="border-t border-gray-700 pt-4 mt-2">
-                    <label className="flex items-center justify-between text-sm text-amber-400 font-bold cursor-pointer">
+                    <label className="flex items-center justify-between text-sm text-amber-400 font-bold cursor-pointer bg-amber-900/10 p-3 rounded-xl border border-amber-500/20">
                       <span className="flex items-center gap-2">
-                        <Users size={16} /> Enviar a Frasco Compartido
+                        <Users size={18} /> Enviar a Frasco Compartido
                       </span>
                       <input
                         type="checkbox"
                         checked={isShared}
                         onChange={() => setIsShared(!isShared)}
-                        className="w-4 h-4 accent-amber-500"
+                        className="w-5 h-5 accent-amber-500 rounded"
                       />
                     </label>
-
                     {isShared && (
-                      <div className="mt-4 p-3 bg-amber-900/10 border border-amber-500/20 rounded-xl animate-fade-in space-y-3">
-                        <select
-                          value={selectedJarId}
-                          onChange={(e) => setSelectedJarId(e.target.value)}
-                          className="w-full bg-[#111827] border border-gray-700 rounded-lg p-2 text-white text-sm"
-                          required={isShared}
-                        >
-                          <option value="">-- Seleccionar Frasco --</option>
-                          {jars.map((j) => (
-                            <option key={j.id} value={j.id}>
-                              {j.name} (Código: {j.code})
-                            </option>
-                          ))}
-                        </select>
-                        {jars.length === 0 && (
-                          <p className="text-xs text-rose-400">
-                            No tenés frascos. Creá uno en la pestaña Frascos
-                            primero.
-                          </p>
-                        )}
+                      <div className="mt-3 p-4 bg-[#111827] border border-amber-500/30 rounded-xl space-y-4 animate-fade-in shadow-inner">
+                        <div>
+                          <label className="text-[10px] text-gray-400 uppercase font-bold block mb-1">
+                            Destino
+                          </label>
+                          <select
+                            value={selectedJarId}
+                            onChange={(e) => setSelectedJarId(e.target.value)}
+                            className="w-full bg-[#374151] border border-gray-700 rounded-lg p-2.5 text-white text-sm outline-none"
+                            required={isShared}
+                          >
+                            <option value="">-- Seleccionar Frasco --</option>
+                            {jars.map((j) => (
+                              <option key={j.id} value={j.id}>
+                                {j.name}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                        <div>
+                          <label className="text-[10px] text-gray-400 uppercase font-bold block mb-1">
+                            Tu porcentaje de responsabilidad
+                          </label>
+                          <div className="flex items-center gap-3">
+                            <input
+                              type="range"
+                              min="1"
+                              max="100"
+                              value={myPercentage}
+                              onChange={(e) => setMyPercentage(e.target.value)}
+                              className="flex-1 accent-amber-500 h-2 bg-gray-700 rounded-lg appearance-none"
+                            />
+                            <span className="font-mono font-bold text-amber-400 bg-[#1F2937] px-3 py-1.5 border border-amber-900/50 rounded-lg shadow">
+                              {myPercentage}%
+                            </span>
+                          </div>
+                        </div>
                       </div>
                     )}
                   </div>
@@ -813,9 +968,62 @@ export default function WealthManager() {
               }`}
             >
               <PlusCircle size={22} />{" "}
-              {isIncome ? "Registrar Ingreso" : "Registrar Deuda"}
+              {isIncome ? "Registrar Ingreso" : "Registrar Operación"}
             </button>
           </form>
+        )}
+
+        {/* ================= PERFIL Y CONFIGURACIÓN ================= */}
+        {activeTab === "perfil" && (
+          <div className="space-y-4 animate-fade-in">
+            <div className="bg-[#1F2937] p-6 rounded-2xl border border-gray-800 shadow-lg flex flex-col items-center text-center relative overflow-hidden">
+              <div className="absolute top-0 left-0 w-full h-24 bg-gradient-to-b from-cyan-900/40 to-transparent"></div>
+              <img
+                src={user.photoURL}
+                alt="Avatar"
+                className="w-24 h-24 rounded-full border-4 border-[#1F2937] shadow-[0_0_20px_rgba(6,182,212,0.5)] z-10 relative"
+              />
+              <h3 className="font-black text-white text-2xl mt-4 z-10">
+                {user.displayName}
+              </h3>
+              <p className="text-sm text-gray-400 z-10">{user.email}</p>
+              <div className="bg-cyan-500/10 border border-cyan-500/20 text-cyan-400 text-xs font-bold px-3 py-1 rounded-full mt-3 uppercase tracking-wider z-10">
+                Cuenta Premium
+              </div>
+            </div>
+
+            <div className="bg-[#1F2937] rounded-2xl border border-gray-800 shadow-lg overflow-hidden">
+              <div className="p-4 border-b border-gray-700/50 flex items-center justify-between hover:bg-[#374151] cursor-pointer transition-colors">
+                <div className="flex items-center gap-3">
+                  <Globe size={18} className="text-gray-400" />
+                  <span className="text-sm font-medium text-gray-300">
+                    Idioma
+                  </span>
+                </div>
+                <span className="text-xs text-gray-500 bg-[#111827] px-2 py-1 rounded">
+                  Español
+                </span>
+              </div>
+              <div className="p-4 flex items-center justify-between hover:bg-[#374151] cursor-pointer transition-colors">
+                <div className="flex items-center gap-3">
+                  <DollarSign size={18} className="text-gray-400" />
+                  <span className="text-sm font-medium text-gray-300">
+                    Moneda Base
+                  </span>
+                </div>
+                <span className="text-xs text-gray-500 bg-[#111827] px-2 py-1 rounded">
+                  ARS (Peso Arg.)
+                </span>
+              </div>
+            </div>
+
+            <button
+              onClick={() => signOut(auth).then(() => setUser(null))}
+              className="w-full bg-red-500/10 border border-red-500/30 text-red-500 font-bold py-4 rounded-xl mt-6 flex justify-center items-center gap-2 hover:bg-red-500/20 transition-all shadow-lg"
+            >
+              <LogOut size={20} /> Cerrar Sesión Segura
+            </button>
+          </div>
         )}
       </div>
 
@@ -845,9 +1053,9 @@ export default function WealthManager() {
         </button>
         <button
           onClick={() => setActiveTab("agregar")}
-          className="flex flex-col items-center justify-center bg-cyan-500 text-slate-950 rounded-full w-12 h-12 -mt-4 shadow-[0_0_15px_rgba(6,182,212,0.4)] border-4 border-[#111827] hover:scale-105 transition-transform"
+          className="flex flex-col items-center justify-center bg-cyan-500 text-slate-950 rounded-full w-14 h-14 -mt-5 shadow-[0_0_15px_rgba(6,182,212,0.4)] border-4 border-[#111827] hover:scale-105 transition-transform"
         >
-          <PlusCircle size={24} />
+          <PlusCircle size={26} />
         </button>
         <button
           onClick={() => setActiveTab("frascos")}
@@ -861,11 +1069,15 @@ export default function WealthManager() {
           <span className="text-[9px] mt-1 font-bold">Frascos</span>
         </button>
         <button
-          onClick={() => signOut(auth).then(() => setUser(null))}
-          className="flex flex-col items-center p-2 text-gray-500 hover:text-red-400 transition-colors"
+          onClick={() => setActiveTab("perfil")}
+          className={`flex flex-col items-center p-2 transition-colors ${
+            activeTab === "perfil"
+              ? "text-cyan-400"
+              : "text-gray-500 hover:text-gray-400"
+          }`}
         >
           <Settings size={22} />
-          <span className="text-[9px] mt-1 font-bold">Salir</span>
+          <span className="text-[9px] mt-1 font-bold">Perfil</span>
         </button>
       </div>
     </div>
