@@ -203,12 +203,13 @@ export default function WealthManager() {
     const payAmt = parseFloat(paymentInput[record.id]);
     if (!payAmt || payAmt <= 0) return;
 
+    const pType = record.paymentType || "cuotas"; // PARCHE DE SEGURIDAD
     const newBalance =
-      record.paymentType === "mensual"
+      pType === "mensual"
         ? record.currentBalance
         : Math.max(0, record.currentBalance - payAmt);
     const newStatus =
-      newBalance === 0 && record.paymentType !== "mensual" ? "paid" : "active";
+      newBalance === 0 && pType !== "mensual" ? "paid" : "active";
 
     const paymentLog = {
       userId: user.uid,
@@ -252,7 +253,6 @@ export default function WealthManager() {
     alert("¡Pago de cuota registrado!");
   };
 
-  // ELIMINAR DEUDA RAÍZ (SE USA DESDE LA PESTAÑA GRÁFICOS AHORA)
   const handleDeleteRoot = async (id, isSharedDebt = false) => {
     if (
       !window.confirm(
@@ -308,7 +308,7 @@ export default function WealthManager() {
   };
 
   // -------------------------------------------------------------
-  // MOTOR DE PROYECCIÓN DE FECHAS Y GRÁFICOS (ACTUALIZADO)
+  // MOTOR DE PROYECCIÓN DE FECHAS (BLINDADO CONTRA DATOS VIEJOS)
   // -------------------------------------------------------------
   const generateTimeline = () => {
     const timeline = [];
@@ -317,39 +317,41 @@ export default function WealthManager() {
     const addProjections = (debt, isShared) => {
       const myRatio = isShared ? debt.myPercentage / 100 : 1;
       const myBalance = debt.currentBalance * myRatio;
-      if (myBalance <= 0 && debt.paymentType !== "mensual") return;
 
-      const startDate = new Date(debt.createdAt);
+      const pType =
+        debt.paymentType || (debt.installments > 1 ? "cuotas" : "unico"); // PARCHE DE SEGURIDAD
+      if (myBalance <= 0 && pType !== "mensual") return;
+
+      const startDate = new Date(debt.createdAt || new Date());
       const startMonthOffset =
         (today.getFullYear() - startDate.getFullYear()) * 12 +
         (today.getMonth() - startDate.getMonth());
       let currentInst = Math.max(1, startMonthOffset + 1);
 
-      // Proyectamos hasta 6 meses a futuro para alimentar los gráficos reales
+      // Proyectamos hasta 6 meses
       for (let i = 0; i < 6; i++) {
-        if (debt.paymentType === "unico" && i > 0) break;
-        if (
-          debt.paymentType === "cuotas" &&
-          currentInst + i > debt.installments
-        )
+        if (pType === "unico" && i > 0) break;
+        if (pType === "cuotas" && currentInst + i > (debt.installments || 1))
           break;
 
         const projDate = new Date(
           today.getFullYear(),
           today.getMonth() + i,
-          debt.dueDay
+          debt.dueDay || 10
         );
         let label = "";
-        if (debt.paymentType === "unico") label = "PAGO ÚNICO";
-        else if (debt.paymentType === "mensual") label = "MENSUAL";
-        else label = `CUOTA ${currentInst + i}/${debt.installments}`;
+        if (pType === "unico") label = "PAGO ÚNICO";
+        else if (pType === "mensual") label = "MENSUAL";
+        else label = `CUOTA ${currentInst + i}/${debt.installments || 1}`;
 
         timeline.push({
           id: `${debt.id}-${i}`,
           originalId: debt.id,
           name: debt.name,
           category: debt.category,
-          amount: isShared ? debt.monthlyMin * myRatio : debt.monthlyMin,
+          amount: isShared
+            ? (debt.monthlyMin || 0) * myRatio
+            : debt.monthlyMin || 0,
           dateObj: projDate,
           dateStr: projDate.toLocaleDateString("es-AR", {
             day: "2-digit",
@@ -393,7 +395,6 @@ export default function WealthManager() {
   );
   const netBalance = incomes - totalPersonalDebt - mySharedDebt;
 
-  // CÁLCULO DE GRÁFICOS REALES BASADO EN EL TIMELINE
   const projChart = [0, 1, 2, 3, 4, 5].map((monthOffset) => {
     const targetDate = new Date(
       new Date().getFullYear(),
@@ -437,7 +438,6 @@ export default function WealthManager() {
 
   return (
     <div className="min-h-screen bg-[#111827] text-slate-100 pb-24 font-sans">
-      {/* HEADER NATIVO */}
       <div className="bg-[#1F2937] p-5 sticky top-0 z-10 border-b border-gray-800 shadow-md flex justify-between items-center">
         <div>
           <h2 className="text-2xl font-bold text-white capitalize tracking-tight">
@@ -491,7 +491,6 @@ export default function WealthManager() {
               </h3>
             </div>
 
-            {/* LA LISTA CRONOLÓGICA INTELIGENTE (SIN BOTÓN ELIMINAR RAÍZ) */}
             {upcomingPayments.length === 0 ? (
               <p className="text-center text-emerald-500 text-sm py-8 bg-[#1F2937] rounded-xl border border-gray-800">
                 No hay pagos proyectados. ¡Estás al día!
@@ -547,7 +546,6 @@ export default function WealthManager() {
                       </div>
                     </div>
 
-                    {/* MOSTRAR INPUT DE PAGO SOLO PARA LA CUOTA DEL MES ACTUAL */}
                     {p.dateObj.getMonth() === new Date().getMonth() &&
                       p.dateObj.getFullYear() === new Date().getFullYear() && (
                         <div className="flex gap-2 mt-1 pt-3 border-t border-gray-700/50">
@@ -585,10 +583,9 @@ export default function WealthManager() {
           </div>
         )}
 
-        {/* ================= GRÁFICOS Y ADMINISTRACIÓN DE DEUDAS (NUEVO) ================= */}
+        {/* ================= GRÁFICOS Y ADMINISTRACIÓN DE DEUDAS ================= */}
         {activeTab === "gráficos" && (
           <div className="space-y-6 animate-fade-in">
-            {/* GRÁFICO DINÁMICO REAL DE 6 MESES */}
             <div className="bg-[#1F2937] p-5 rounded-2xl border border-gray-800 shadow-lg">
               <h3 className="text-sm font-bold text-gray-400 uppercase tracking-wider mb-4 flex items-center gap-2">
                 <BarChart3 size={16} /> Proyección Mensual (Próx. 6 Meses)
@@ -616,7 +613,6 @@ export default function WealthManager() {
               </div>
             </div>
 
-            {/* GESTOR DE DEUDAS ORIGINALES (ELIMINAR DE RAÍZ) */}
             <div className="bg-[#1F2937] p-5 rounded-2xl border border-gray-800 shadow-lg">
               <h3 className="text-sm font-bold text-rose-400 uppercase tracking-wider mb-4 flex items-center gap-2">
                 <DatabaseBackup size={16} /> Gestor de Deudas Originales
@@ -635,7 +631,8 @@ export default function WealthManager() {
                     <div>
                       <p className="text-sm font-bold text-white">{d.name}</p>
                       <p className="text-[10px] text-gray-500">
-                        {d.category} • {d.paymentType.toUpperCase()}
+                        {d.category} •{" "}
+                        {(d.paymentType || "cuotas").toUpperCase()}
                       </p>
                     </div>
                     <div className="flex items-center gap-4">
@@ -776,7 +773,6 @@ export default function WealthManager() {
                           </div>
                         </div>
 
-                        {/* HISTORIAL FORENSE DE PAGOS */}
                         {d.history && d.history.length > 0 && (
                           <div className="bg-black/20 rounded-lg p-2 mt-2 max-h-24 overflow-y-auto">
                             <p className="text-[10px] text-gray-400 uppercase font-bold flex items-center gap-1 mb-1.5">
