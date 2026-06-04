@@ -27,6 +27,7 @@ import {
   BarChart3,
   Users,
   Trash2,
+  Edit,
   ArrowUpCircle,
   ArrowDownCircle,
   CheckCircle2,
@@ -59,6 +60,10 @@ export default function WealthManager() {
   const [records, setRecords] = useState([]);
   const [jars, setJars] = useState([]);
   const [sharedDebts, setSharedDebts] = useState([]);
+
+  // ESTADOS DE EDICIÓN
+  const [editRecordId, setEditRecordId] = useState(null);
+  const [editIsShared, setEditIsShared] = useState(false);
 
   // FORMULARIO (SÚPER MOTOR)
   const [isIncome, setIsIncome] = useState(false);
@@ -132,6 +137,16 @@ export default function WealthManager() {
     }
   };
 
+  const resetForm = () => {
+    setEditRecordId(null);
+    setEditIsShared(false);
+    setName("");
+    setAmount("");
+    setInstallments("1");
+    setIsShared(false);
+    setNewCategoryName("");
+  };
+
   const handleSaveRecord = async (e) => {
     e.preventDefault();
     if (!user) return;
@@ -168,42 +183,86 @@ export default function WealthManager() {
       installments: finalInstallments,
       paymentType,
       dueDay: parseInt(dueDay),
-      createdAt: new Date().toISOString(),
-      status: "active",
-      creatorId: user.uid,
+      updatedAt: new Date().toISOString(),
     };
 
-    if (!isIncome && isShared && selectedJarId) {
-      const jar = jars.find((j) => j.id === selectedJarId);
-      recordData.jarId = selectedJarId;
-      recordData.jarName = jar?.name || "Frasco Compartido";
-      recordData.myPercentage = parseFloat(myPercentage);
-      recordData.history = [];
-
-      const docRef = await addDoc(collection(db, `shared_debts`), recordData);
-      setSharedDebts([{ id: docRef.id, ...recordData }, ...sharedDebts]);
+    if (editRecordId) {
+      // --- MODO EDICIÓN ---
+      if (editIsShared) {
+        await updateDoc(doc(db, `shared_debts`, editRecordId), recordData);
+        setSharedDebts(
+          sharedDebts.map((r) =>
+            r.id === editRecordId ? { ...r, ...recordData } : r
+          )
+        );
+      } else {
+        recordData.type = isIncome ? "income" : "debt";
+        await updateDoc(
+          doc(db, `users/${user.uid}/finances`, editRecordId),
+          recordData
+        );
+        setRecords(
+          records.map((r) =>
+            r.id === editRecordId ? { ...r, ...recordData } : r
+          )
+        );
+      }
+      alert("¡Registro actualizado correctamente!");
     } else {
-      recordData.type = isIncome ? "income" : "debt";
-      const docRef = await addDoc(
-        collection(db, `users/${user.uid}/finances`),
-        recordData
-      );
-      setRecords([{ id: docRef.id, ...recordData }, ...records]);
+      // --- MODO CREAR NUEVO ---
+      recordData.createdAt = new Date().toISOString();
+      recordData.status = "active";
+      recordData.creatorId = user.uid;
+
+      if (!isIncome && isShared && selectedJarId) {
+        const jar = jars.find((j) => j.id === selectedJarId);
+        recordData.jarId = selectedJarId;
+        recordData.jarName = jar?.name || "Frasco Compartido";
+        recordData.myPercentage = parseFloat(myPercentage);
+        recordData.history = [];
+
+        const docRef = await addDoc(collection(db, `shared_debts`), recordData);
+        setSharedDebts([{ id: docRef.id, ...recordData }, ...sharedDebts]);
+      } else {
+        recordData.type = isIncome ? "income" : "debt";
+        const docRef = await addDoc(
+          collection(db, `users/${user.uid}/finances`),
+          recordData
+        );
+        setRecords([{ id: docRef.id, ...recordData }, ...records]);
+      }
     }
 
-    setName("");
-    setAmount("");
-    setInstallments("1");
-    setIsShared(false);
-    setNewCategoryName("");
+    resetForm();
     setActiveTab(isShared ? "frascos" : "resumen");
+  };
+
+  const handleEdit = (record, isSharedRecord) => {
+    setEditRecordId(record.id);
+    setEditIsShared(isSharedRecord);
+    setIsIncome(record.type === "income");
+    setName(record.name);
+    setAmount(record.originalAmount.toString());
+    setCategory(record.category);
+    setPaymentType(
+      record.paymentType || (record.installments > 1 ? "cuotas" : "unico")
+    );
+    setInstallments(record.installments?.toString() || "1");
+    setDueDay(record.dueDay?.toString() || "10");
+    setIsShared(isSharedRecord);
+
+    if (isSharedRecord) {
+      setSelectedJarId(record.jarId);
+      setMyPercentage(record.myPercentage?.toString() || "50");
+    }
+    setActiveTab("agregar");
   };
 
   const handlePay = async (record, isSharedDebt = false) => {
     const payAmt = parseFloat(paymentInput[record.id]);
     if (!payAmt || payAmt <= 0) return;
 
-    const pType = record.paymentType || "cuotas"; // PARCHE DE SEGURIDAD
+    const pType = record.paymentType || "cuotas";
     const newBalance =
       pType === "mensual"
         ? record.currentBalance
@@ -308,7 +367,7 @@ export default function WealthManager() {
   };
 
   // -------------------------------------------------------------
-  // MOTOR DE PROYECCIÓN DE FECHAS (BLINDADO CONTRA DATOS VIEJOS)
+  // MOTOR DE PROYECCIÓN DE FECHAS
   // -------------------------------------------------------------
   const generateTimeline = () => {
     const timeline = [];
@@ -319,7 +378,7 @@ export default function WealthManager() {
       const myBalance = debt.currentBalance * myRatio;
 
       const pType =
-        debt.paymentType || (debt.installments > 1 ? "cuotas" : "unico"); // PARCHE DE SEGURIDAD
+        debt.paymentType || (debt.installments > 1 ? "cuotas" : "unico");
       if (myBalance <= 0 && pType !== "mensual") return;
 
       const startDate = new Date(debt.createdAt || new Date());
@@ -328,7 +387,6 @@ export default function WealthManager() {
         (today.getMonth() - startDate.getMonth());
       let currentInst = Math.max(1, startMonthOffset + 1);
 
-      // Proyectamos hasta 6 meses
       for (let i = 0; i < 6; i++) {
         if (pType === "unico" && i > 0) break;
         if (pType === "cuotas" && currentInst + i > (debt.installments || 1))
@@ -395,6 +453,7 @@ export default function WealthManager() {
   );
   const netBalance = incomes - totalPersonalDebt - mySharedDebt;
 
+  // CÁLCULO DE GRÁFICOS REALES (Ahora las barras crecen desde el fondo "items-end h-full")
   const projChart = [0, 1, 2, 3, 4, 5].map((monthOffset) => {
     const targetDate = new Date(
       new Date().getFullYear(),
@@ -476,7 +535,7 @@ export default function WealthManager() {
               </div>
               <div className="bg-[#1F2937] rounded-2xl p-4 border border-gray-800 shadow-lg">
                 <h3 className="text-gray-400 text-[10px] mb-1 uppercase tracking-wider font-bold">
-                  Deuda Restante Proyectada
+                  Deuda Proyectada
                 </h3>
                 <p className="text-2xl font-black text-rose-400">
                   ${(totalPersonalDebt + mySharedDebt).toLocaleString("es-AR")}
@@ -583,27 +642,32 @@ export default function WealthManager() {
           </div>
         )}
 
-        {/* ================= GRÁFICOS Y ADMINISTRACIÓN DE DEUDAS ================= */}
+        {/* ================= GRÁFICOS Y ADMINISTRACIÓN DE DEUDAS (REPARADO) ================= */}
         {activeTab === "gráficos" && (
           <div className="space-y-6 animate-fade-in">
+            {/* GRÁFICO DINÁMICO REAL DE 6 MESES - BARRAS REPARADAS */}
             <div className="bg-[#1F2937] p-5 rounded-2xl border border-gray-800 shadow-lg">
               <h3 className="text-sm font-bold text-gray-400 uppercase tracking-wider mb-4 flex items-center gap-2">
                 <BarChart3 size={16} /> Proyección Mensual (Próx. 6 Meses)
               </h3>
-              <div className="flex justify-around items-end h-48 border-b border-gray-700 pb-2">
+
+              {/* Contenedor Reparado: h-48 para la caja, h-full para las columnas */}
+              <div className="flex justify-around items-end h-48 border-b border-gray-700 pb-2 pt-6">
                 {projChart.map((p, i) => (
                   <div
                     key={i}
-                    className="flex flex-col items-center w-1/6 group"
+                    className="flex flex-col items-center justify-end w-1/6 h-full"
                   >
-                    <span className="text-[9px] text-cyan-400 mb-1 opacity-0 group-hover:opacity-100 transition-all font-mono">
+                    {/* Montos siempre visibles */}
+                    <span className="text-[9px] text-cyan-400 mb-1 font-mono font-bold">
                       ${Math.round(p.amt).toLocaleString("es-AR")}
                     </span>
+                    {/* Barras que crecen correctamente */}
                     <div
                       style={{
-                        height: `${Math.max((p.amt / maxProj) * 100, 5)}%`,
+                        height: `${Math.max((p.amt / maxProj) * 100, 2)}%`,
                       }}
-                      className="w-full bg-gradient-to-t from-cyan-900 to-cyan-500 rounded-t-sm hover:from-cyan-700 hover:to-cyan-400 transition-colors shadow-[0_0_10px_rgba(6,182,212,0.2)]"
+                      className="w-full bg-gradient-to-t from-cyan-900 to-cyan-500 rounded-t-sm shadow-[0_0_10px_rgba(6,182,212,0.2)]"
                     ></div>
                     <span className="text-[9px] text-gray-400 mt-2 font-bold uppercase">
                       {p.label}
@@ -613,49 +677,65 @@ export default function WealthManager() {
               </div>
             </div>
 
+            {/* GESTOR DE REGISTROS UNIVERSAL (ELIMINAR Y EDITAR RAÍZ) */}
             <div className="bg-[#1F2937] p-5 rounded-2xl border border-gray-800 shadow-lg">
-              <h3 className="text-sm font-bold text-rose-400 uppercase tracking-wider mb-4 flex items-center gap-2">
-                <DatabaseBackup size={16} /> Gestor de Deudas Originales
+              <h3 className="text-sm font-bold text-rose-400 uppercase tracking-wider mb-2 flex items-center gap-2">
+                <DatabaseBackup size={16} /> Gestor de Registros Originales
               </h3>
               <p className="text-xs text-gray-400 mb-4">
-                Desde aquí podés auditar y eliminar el registro original
-                completo (borra todas las cuotas futuras de la línea de tiempo).
+                Desde aquí podés auditar, editar o eliminar de raíz cualquier
+                ingreso o deuda histórica del sistema.
               </p>
 
               <div className="space-y-3">
-                {[...activePersonalDebts, ...activeSharedDebts].map((d) => (
+                {[...records, ...sharedDebts].map((d) => (
                   <div
                     key={d.id}
                     className="flex justify-between items-center p-3 bg-[#111827] border border-gray-700 rounded-xl"
                   >
                     <div>
-                      <p className="text-sm font-bold text-white">{d.name}</p>
+                      <p
+                        className={`text-sm font-bold ${
+                          d.type === "income"
+                            ? "text-emerald-400"
+                            : "text-white"
+                        }`}
+                      >
+                        {d.name}
+                      </p>
                       <p className="text-[10px] text-gray-500">
                         {d.category} •{" "}
-                        {(d.paymentType || "cuotas").toUpperCase()}
+                        {(d.paymentType || "único").toUpperCase()}
                       </p>
                     </div>
-                    <div className="flex items-center gap-4">
-                      <p className="text-xs font-mono text-gray-400">
-                        ${d.currentBalance.toLocaleString("es-AR")}
+                    <div className="flex items-center gap-2">
+                      <p className="text-xs font-mono text-gray-400 mr-2">
+                        ${d.originalAmount.toLocaleString("es-AR")}
                       </p>
+                      <button
+                        onClick={() => handleEdit(d, d.jarId !== undefined)}
+                        className="text-cyan-400 hover:text-cyan-300 transition-colors bg-[#1F2937] p-1.5 rounded-lg"
+                        title="Editar"
+                      >
+                        <Edit size={16} />
+                      </button>
                       <button
                         onClick={() =>
                           handleDeleteRoot(d.id, d.jarId !== undefined)
                         }
                         className="text-gray-600 hover:text-red-500 transition-colors bg-[#1F2937] p-1.5 rounded-lg"
+                        title="Eliminar"
                       >
                         <Trash2 size={16} />
                       </button>
                     </div>
                   </div>
                 ))}
-                {activePersonalDebts.length === 0 &&
-                  activeSharedDebts.length === 0 && (
-                    <p className="text-xs text-emerald-500 text-center">
-                      No hay registros raíz activos.
-                    </p>
-                  )}
+                {records.length === 0 && sharedDebts.length === 0 && (
+                  <p className="text-xs text-emerald-500 text-center">
+                    No hay registros en el historial.
+                  </p>
+                )}
               </div>
             </div>
           </div>
@@ -805,12 +885,23 @@ export default function WealthManager() {
           </div>
         )}
 
-        {/* ================= AGREGAR ================= */}
+        {/* ================= AGREGAR / EDITAR ================= */}
         {activeTab === "agregar" && (
           <form
             onSubmit={handleSaveRecord}
             className="space-y-5 animate-fade-in"
           >
+            {editRecordId && (
+              <div className="bg-cyan-900/30 border border-cyan-500/50 p-3 rounded-xl text-center">
+                <p className="text-sm font-bold text-cyan-400 uppercase tracking-widest">
+                  Modo Edición
+                </p>
+                <p className="text-xs text-gray-400">
+                  Estás modificando un registro existente.
+                </p>
+              </div>
+            )}
+
             <div className="flex bg-[#1F2937] p-1 rounded-xl border border-gray-800 shadow-md">
               <button
                 type="button"
@@ -1027,8 +1118,21 @@ export default function WealthManager() {
               }`}
             >
               <PlusCircle size={22} />{" "}
-              {isIncome ? "Registrar Ingreso" : "Registrar Operación"}
+              {editRecordId
+                ? "Actualizar Registro"
+                : isIncome
+                ? "Registrar Ingreso"
+                : "Registrar Operación"}
             </button>
+            {editRecordId && (
+              <button
+                type="button"
+                onClick={resetForm}
+                className="w-full mt-2 py-3 text-sm font-bold text-gray-400 hover:text-white"
+              >
+                Cancelar Edición
+              </button>
+            )}
           </form>
         )}
 
@@ -1089,7 +1193,10 @@ export default function WealthManager() {
       {/* MENÚ INFERIOR */}
       <div className="fixed bottom-0 left-0 right-0 bg-[#1F2937] border-t border-gray-800 flex justify-around p-2 pb-safe z-50">
         <button
-          onClick={() => setActiveTab("resumen")}
+          onClick={() => {
+            resetForm();
+            setActiveTab("resumen");
+          }}
           className={`flex flex-col items-center p-2 transition-colors ${
             activeTab === "resumen"
               ? "text-cyan-400"
@@ -1100,7 +1207,10 @@ export default function WealthManager() {
           <span className="text-[9px] mt-1 font-bold">Resumen</span>
         </button>
         <button
-          onClick={() => setActiveTab("gráficos")}
+          onClick={() => {
+            resetForm();
+            setActiveTab("gráficos");
+          }}
           className={`flex flex-col items-center p-2 transition-colors ${
             activeTab === "gráficos"
               ? "text-cyan-400"
@@ -1111,13 +1221,19 @@ export default function WealthManager() {
           <span className="text-[9px] mt-1 font-bold">Gráficos</span>
         </button>
         <button
-          onClick={() => setActiveTab("agregar")}
+          onClick={() => {
+            resetForm();
+            setActiveTab("agregar");
+          }}
           className="flex flex-col items-center justify-center bg-cyan-500 text-slate-950 rounded-full w-14 h-14 -mt-5 shadow-[0_0_15px_rgba(6,182,212,0.4)] border-4 border-[#111827] hover:scale-105 transition-transform"
         >
           <PlusCircle size={26} />
         </button>
         <button
-          onClick={() => setActiveTab("frascos")}
+          onClick={() => {
+            resetForm();
+            setActiveTab("frascos");
+          }}
           className={`flex flex-col items-center p-2 transition-colors ${
             activeTab === "frascos"
               ? "text-amber-400"
@@ -1128,7 +1244,10 @@ export default function WealthManager() {
           <span className="text-[9px] mt-1 font-bold">Frascos</span>
         </button>
         <button
-          onClick={() => setActiveTab("perfil")}
+          onClick={() => {
+            resetForm();
+            setActiveTab("perfil");
+          }}
           className={`flex flex-col items-center p-2 transition-colors ${
             activeTab === "perfil"
               ? "text-cyan-400"
