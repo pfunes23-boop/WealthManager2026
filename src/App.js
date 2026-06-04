@@ -30,12 +30,12 @@ import {
   ArrowUpCircle,
   ArrowDownCircle,
   CheckCircle2,
-  Target,
   CalendarDays,
   History,
   LogOut,
   Globe,
   DollarSign,
+  DatabaseBackup,
 } from "lucide-react";
 
 const firebaseConfig = {
@@ -132,9 +132,6 @@ export default function WealthManager() {
     }
   };
 
-  // -------------------------------------------------------------
-  // GUARDADO INTELIGENTE (CUOTAS, MENSUAL, ÚNICO, CATEGORÍAS)
-  // -------------------------------------------------------------
   const handleSaveRecord = async (e) => {
     e.preventDefault();
     if (!user) return;
@@ -181,7 +178,7 @@ export default function WealthManager() {
       recordData.jarId = selectedJarId;
       recordData.jarName = jar?.name || "Frasco Compartido";
       recordData.myPercentage = parseFloat(myPercentage);
-      recordData.history = []; // Historial de pagos forense
+      recordData.history = [];
 
       const docRef = await addDoc(collection(db, `shared_debts`), recordData);
       setSharedDebts([{ id: docRef.id, ...recordData }, ...sharedDebts]);
@@ -202,14 +199,10 @@ export default function WealthManager() {
     setActiveTab(isShared ? "frascos" : "resumen");
   };
 
-  // -------------------------------------------------------------
-  // MOTOR DE PAGOS CON HISTORIAL (FORENSE)
-  // -------------------------------------------------------------
   const handlePay = async (record, isSharedDebt = false) => {
     const payAmt = parseFloat(paymentInput[record.id]);
     if (!payAmt || payAmt <= 0) return;
 
-    // Si es mensual no baja el "saldo total" a 0 fácilmente, asume el pago del mes.
     const newBalance =
       record.paymentType === "mensual"
         ? record.currentBalance
@@ -256,12 +249,26 @@ export default function WealthManager() {
       );
     }
     setPaymentInput({ ...paymentInput, [record.id]: "" });
-    alert("Pago registrado correctamente.");
+    alert("¡Pago de cuota registrado!");
   };
 
-  // -------------------------------------------------------------
-  // MULTIJUGADOR: FRASCOS
-  // -------------------------------------------------------------
+  // ELIMINAR DEUDA RAÍZ (SE USA DESDE LA PESTAÑA GRÁFICOS AHORA)
+  const handleDeleteRoot = async (id, isSharedDebt = false) => {
+    if (
+      !window.confirm(
+        "¿Seguro que querés eliminar la deuda original completa? Esto borrará todas las cuotas futuras."
+      )
+    )
+      return;
+    if (isSharedDebt) {
+      await deleteDoc(doc(db, `shared_debts`, id));
+      setSharedDebts(sharedDebts.filter((r) => r.id !== id));
+    } else {
+      await deleteDoc(doc(db, `users/${user.uid}/finances`, id));
+      setRecords(records.filter((r) => r.id !== id));
+    }
+  };
+
   const handleCreateJar = async (e) => {
     e.preventDefault();
     if (!newJarName) return;
@@ -301,7 +308,7 @@ export default function WealthManager() {
   };
 
   // -------------------------------------------------------------
-  // MATEMÁTICA Y GENERADOR DE LÍNEA DE TIEMPO (TIMELINE)
+  // MOTOR DE PROYECCIÓN DE FECHAS Y GRÁFICOS (ACTUALIZADO)
   // -------------------------------------------------------------
   const generateTimeline = () => {
     const timeline = [];
@@ -318,8 +325,8 @@ export default function WealthManager() {
         (today.getMonth() - startDate.getMonth());
       let currentInst = Math.max(1, startMonthOffset + 1);
 
-      // Proyectar los próximos 4 pagos
-      for (let i = 0; i < 4; i++) {
+      // Proyectamos hasta 6 meses a futuro para alimentar los gráficos reales
+      for (let i = 0; i < 6; i++) {
         if (debt.paymentType === "unico" && i > 0) break;
         if (
           debt.paymentType === "cuotas" &&
@@ -363,7 +370,7 @@ export default function WealthManager() {
       .filter((d) => d.status === "active")
       .forEach((d) => addProjections(d, true));
 
-    return timeline.sort((a, b) => a.dateObj - b.dateObj); // Ordenado por fecha de vencimiento
+    return timeline.sort((a, b) => a.dateObj - b.dateObj);
   };
 
   const upcomingPayments = generateTimeline();
@@ -371,27 +378,36 @@ export default function WealthManager() {
   const incomes = records
     .filter((r) => r.type === "income")
     .reduce((acc, r) => acc + r.originalAmount, 0);
-  const totalPersonalDebt = records
-    .filter((r) => r.type === "debt" && r.status === "active")
-    .reduce((acc, r) => acc + r.currentBalance, 0);
-  const mySharedDebt = sharedDebts
-    .filter((r) => r.status === "active")
-    .reduce((acc, r) => acc + r.currentBalance * (r.myPercentage / 100), 0);
+  const activePersonalDebts = records.filter(
+    (r) => r.type === "debt" && r.status === "active"
+  );
+  const activeSharedDebts = sharedDebts.filter((r) => r.status === "active");
+
+  const totalPersonalDebt = activePersonalDebts.reduce(
+    (acc, r) => acc + r.currentBalance,
+    0
+  );
+  const mySharedDebt = activeSharedDebts.reduce(
+    (acc, r) => acc + r.currentBalance * (r.myPercentage / 100),
+    0
+  );
   const netBalance = incomes - totalPersonalDebt - mySharedDebt;
 
-  // GRÁFICOS DINÁMICOS
-  const projChart = [0, 1, 2, 3].map((monthOffset) => {
-    const totalMes = upcomingPayments
-      .filter(
-        (p) =>
-          p.dateObj.getMonth() === (new Date().getMonth() + monthOffset) % 12
-      )
-      .reduce((acc, p) => acc + p.amount, 0);
-    const mesStr = new Date(
+  // CÁLCULO DE GRÁFICOS REALES BASADO EN EL TIMELINE
+  const projChart = [0, 1, 2, 3, 4, 5].map((monthOffset) => {
+    const targetDate = new Date(
       new Date().getFullYear(),
       new Date().getMonth() + monthOffset,
       1
-    ).toLocaleDateString("es-ES", { month: "short" });
+    );
+    const totalMes = upcomingPayments
+      .filter(
+        (p) =>
+          p.dateObj.getMonth() === targetDate.getMonth() &&
+          p.dateObj.getFullYear() === targetDate.getFullYear()
+      )
+      .reduce((acc, p) => acc + p.amount, 0);
+    const mesStr = targetDate.toLocaleDateString("es-ES", { month: "short" });
     return { label: mesStr, amt: totalMes };
   });
   const maxProj = Math.max(...projChart.map((p) => p.amt), 1);
@@ -421,7 +437,7 @@ export default function WealthManager() {
 
   return (
     <div className="min-h-screen bg-[#111827] text-slate-100 pb-24 font-sans">
-      {/* HEADER */}
+      {/* HEADER NATIVO */}
       <div className="bg-[#1F2937] p-5 sticky top-0 z-10 border-b border-gray-800 shadow-md flex justify-between items-center">
         <div>
           <h2 className="text-2xl font-bold text-white capitalize tracking-tight">
@@ -460,7 +476,7 @@ export default function WealthManager() {
               </div>
               <div className="bg-[#1F2937] rounded-2xl p-4 border border-gray-800 shadow-lg">
                 <h3 className="text-gray-400 text-[10px] mb-1 uppercase tracking-wider font-bold">
-                  Deuda Total Proyectada
+                  Deuda Restante Proyectada
                 </h3>
                 <p className="text-2xl font-black text-rose-400">
                   ${(totalPersonalDebt + mySharedDebt).toLocaleString("es-AR")}
@@ -475,7 +491,7 @@ export default function WealthManager() {
               </h3>
             </div>
 
-            {/* LA LISTA CRONOLÓGICA INTELIGENTE */}
+            {/* LA LISTA CRONOLÓGICA INTELIGENTE (SIN BOTÓN ELIMINAR RAÍZ) */}
             {upcomingPayments.length === 0 ? (
               <p className="text-center text-emerald-500 text-sm py-8 bg-[#1F2937] rounded-xl border border-gray-800">
                 No hay pagos proyectados. ¡Estás al día!
@@ -531,37 +547,37 @@ export default function WealthManager() {
                       </div>
                     </div>
 
-                    {/* MOSTRAR BOTÓN DE PAGO SOLO EN EL MES ACTUAL (Para no pagar cuotas futuras por error acá) */}
-                    {idx === 0 ||
-                    p.dateObj.getMonth() === new Date().getMonth() ? (
-                      <div className="flex gap-2 mt-1 pt-3 border-t border-gray-700/50">
-                        <input
-                          type="number"
-                          placeholder="Monto a pagar..."
-                          onChange={(e) =>
-                            setPaymentInput({
-                              ...paymentInput,
-                              [p.originalId]: e.target.value,
-                            })
-                          }
-                          className={`w-full bg-[#111827] border rounded-lg px-3 text-xs text-white focus:outline-none ${
-                            p.isShared
-                              ? "border-amber-900/50 focus:ring-1 focus:ring-amber-500"
-                              : "border-gray-700 focus:ring-1 focus:ring-cyan-500"
-                          }`}
-                        />
-                        <button
-                          onClick={() => handlePay(p.rawDebt, p.isShared)}
-                          className={`px-4 py-1.5 rounded-lg text-xs font-bold text-white shadow transition-all ${
-                            p.isShared
-                              ? "bg-amber-600 hover:bg-amber-500"
-                              : "bg-cyan-600 hover:bg-cyan-500"
-                          }`}
-                        >
-                          Abonar
-                        </button>
-                      </div>
-                    ) : null}
+                    {/* MOSTRAR INPUT DE PAGO SOLO PARA LA CUOTA DEL MES ACTUAL */}
+                    {p.dateObj.getMonth() === new Date().getMonth() &&
+                      p.dateObj.getFullYear() === new Date().getFullYear() && (
+                        <div className="flex gap-2 mt-1 pt-3 border-t border-gray-700/50">
+                          <input
+                            type="number"
+                            placeholder="Monto a abonar..."
+                            onChange={(e) =>
+                              setPaymentInput({
+                                ...paymentInput,
+                                [p.originalId]: e.target.value,
+                              })
+                            }
+                            className={`w-full bg-[#111827] border rounded-lg px-3 text-xs text-white focus:outline-none ${
+                              p.isShared
+                                ? "border-amber-900/50 focus:ring-1 focus:ring-amber-500"
+                                : "border-gray-700 focus:ring-1 focus:ring-cyan-500"
+                            }`}
+                          />
+                          <button
+                            onClick={() => handlePay(p.rawDebt, p.isShared)}
+                            className={`px-4 py-1.5 rounded-lg text-xs font-bold text-white shadow transition-all ${
+                              p.isShared
+                                ? "bg-amber-600 hover:bg-amber-500"
+                                : "bg-cyan-600 hover:bg-cyan-500"
+                            }`}
+                          >
+                            Abonar
+                          </button>
+                        </div>
+                      )}
                   </div>
                 ))}
               </div>
@@ -569,20 +585,21 @@ export default function WealthManager() {
           </div>
         )}
 
-        {/* ================= GRÁFICOS Y ANÁLISIS MENSUAL ================= */}
+        {/* ================= GRÁFICOS Y ADMINISTRACIÓN DE DEUDAS (NUEVO) ================= */}
         {activeTab === "gráficos" && (
           <div className="space-y-6 animate-fade-in">
+            {/* GRÁFICO DINÁMICO REAL DE 6 MESES */}
             <div className="bg-[#1F2937] p-5 rounded-2xl border border-gray-800 shadow-lg">
               <h3 className="text-sm font-bold text-gray-400 uppercase tracking-wider mb-4 flex items-center gap-2">
-                <BarChart3 size={16} /> Proyección Mensual Requerida
+                <BarChart3 size={16} /> Proyección Mensual (Próx. 6 Meses)
               </h3>
               <div className="flex justify-around items-end h-48 border-b border-gray-700 pb-2">
                 {projChart.map((p, i) => (
                   <div
                     key={i}
-                    className="flex flex-col items-center w-1/5 group"
+                    className="flex flex-col items-center w-1/6 group"
                   >
-                    <span className="text-[10px] text-cyan-400 mb-1 opacity-0 group-hover:opacity-100 transition-all font-mono">
+                    <span className="text-[9px] text-cyan-400 mb-1 opacity-0 group-hover:opacity-100 transition-all font-mono">
                       ${Math.round(p.amt).toLocaleString("es-AR")}
                     </span>
                     <div
@@ -591,11 +608,57 @@ export default function WealthManager() {
                       }}
                       className="w-full bg-gradient-to-t from-cyan-900 to-cyan-500 rounded-t-sm hover:from-cyan-700 hover:to-cyan-400 transition-colors shadow-[0_0_10px_rgba(6,182,212,0.2)]"
                     ></div>
-                    <span className="text-[10px] text-gray-400 mt-2 font-bold uppercase">
+                    <span className="text-[9px] text-gray-400 mt-2 font-bold uppercase">
                       {p.label}
                     </span>
                   </div>
                 ))}
+              </div>
+            </div>
+
+            {/* GESTOR DE DEUDAS ORIGINALES (ELIMINAR DE RAÍZ) */}
+            <div className="bg-[#1F2937] p-5 rounded-2xl border border-gray-800 shadow-lg">
+              <h3 className="text-sm font-bold text-rose-400 uppercase tracking-wider mb-4 flex items-center gap-2">
+                <DatabaseBackup size={16} /> Gestor de Deudas Originales
+              </h3>
+              <p className="text-xs text-gray-400 mb-4">
+                Desde aquí podés auditar y eliminar el registro original
+                completo (borra todas las cuotas futuras de la línea de tiempo).
+              </p>
+
+              <div className="space-y-3">
+                {[...activePersonalDebts, ...activeSharedDebts].map((d) => (
+                  <div
+                    key={d.id}
+                    className="flex justify-between items-center p-3 bg-[#111827] border border-gray-700 rounded-xl"
+                  >
+                    <div>
+                      <p className="text-sm font-bold text-white">{d.name}</p>
+                      <p className="text-[10px] text-gray-500">
+                        {d.category} • {d.paymentType.toUpperCase()}
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-4">
+                      <p className="text-xs font-mono text-gray-400">
+                        ${d.currentBalance.toLocaleString("es-AR")}
+                      </p>
+                      <button
+                        onClick={() =>
+                          handleDeleteRoot(d.id, d.jarId !== undefined)
+                        }
+                        className="text-gray-600 hover:text-red-500 transition-colors bg-[#1F2937] p-1.5 rounded-lg"
+                      >
+                        <Trash2 size={16} />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+                {activePersonalDebts.length === 0 &&
+                  activeSharedDebts.length === 0 && (
+                    <p className="text-xs text-emerald-500 text-center">
+                      No hay registros raíz activos.
+                    </p>
+                  )}
               </div>
             </div>
           </div>
@@ -717,7 +780,7 @@ export default function WealthManager() {
                         {d.history && d.history.length > 0 && (
                           <div className="bg-black/20 rounded-lg p-2 mt-2 max-h-24 overflow-y-auto">
                             <p className="text-[10px] text-gray-400 uppercase font-bold flex items-center gap-1 mb-1.5">
-                              <History size={10} /> Últimos pagos:
+                              <History size={10} /> Últimos pagos conjuntos:
                             </p>
                             {d.history
                               .slice()
@@ -746,7 +809,7 @@ export default function WealthManager() {
           </div>
         )}
 
-        {/* ================= AGREGAR (CON CATEGORÍAS Y TIPOS DE PAGO) ================= */}
+        {/* ================= AGREGAR ================= */}
         {activeTab === "agregar" && (
           <form
             onSubmit={handleSaveRecord}
